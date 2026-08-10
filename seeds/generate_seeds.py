@@ -15,15 +15,30 @@ why each one exists.
 
     python3 seeds/generate_seeds.py
 
+SHAPE FIDELITY
+--------------
+The payloads here follow observed production shapes, not only the published examples. The
+two differ in ways that matter, and each divergence is reproduced deliberately:
+
+  * `job_category` carries values outside the published four-value enum (for example
+    `qa_appeal`). The published enums are incomplete, so enum tests in this project warn
+    rather than fail.
+  * `job.actioned` includes `job.created_at`, which the documentation does not promise.
+    Job age at action time depends on it.
+  * `job.actioned` sometimes carries no `entity` object at all.
+  * `job.closed` policies carry a `parent_id`, forming a policy hierarchy, and a nested
+    per-policy `enforcement_actions` array. Neither appears in the published schema.
+  * Reviewer groups include outsourced-moderation vendor names, which is how moderator
+    populations are segmented in practice.
+
 DETERMINISM
 -----------
 Fixed random seed and a fixed anchor date, so regenerating produces byte-identical files.
-CI can therefore assert that the committed seeds match the generator.
 
 ALL DATA IS SYNTHETIC
 ---------------------
-Invented usernames, example.com addresses, lorem-style content. No real people, no real
-handles, no real moderation content.
+Invented usernames, example.com addresses, lorem-style content, invented vendor names. No
+real people, no real handles, no real moderation content.
 """
 
 from __future__ import annotations
@@ -52,65 +67,94 @@ QUEUES = [
     {"slug": "flagged-text", "is_multi_review": False},
     {"slug": "flagged-images", "is_multi_review": False},
     {"slug": "user-reports", "is_multi_review": False},
+    {"slug": "proactive-review-qa", "is_multi_review": False},
     {"slug": "escalations", "is_multi_review": True},
     {"slug": "high-harm-review", "is_multi_review": True},
 ]
 
+# Policy tree. Parents are top-level policy areas; children are the specific violations
+# beneath them. `parent_id` is how the hierarchy arrives on the wire, and rolling
+# distribution up to the parent is far more useful than counting leaves.
+POLICY_PARENTS = [
+    {"id": "397b80a0-e139-4e34-940d-12eec813cff5", "name": "Harassment and Abuse"},
+    {"id": "4a1f7d22-2222-4c11-9a0e-8f31bb920011", "name": "Violent Threats"},
+    {"id": "5b2e8e33-3333-4d22-8b1f-9042cc031122", "name": "Adult Content"},
+    {"id": "6c3f9f44-4444-4e33-9c20-a153dd142233", "name": "Self-Harm"},
+    {"id": "7d40a055-5555-4f44-ad31-b264ee253344", "name": "Platform Integrity"},
+]
+
 POLICIES = [
+    # ---- children -------------------------------------------------------------------
     {
         "id": "09049cc6-ddf9-47fe-b6ff-1d266a3aad7d",
-        "name": "Threats of Violence",
-        "customer_ref": "internal-policy-101",
+        "name": "Direct Threat of Violence",
+        "parent_id": "4a1f7d22-2222-4c11-9a0e-8f31bb920011",
         "is_illegal": True,
         "is_non_violating": False,
+        "enforcement_actions": ["ban_user", "remove_content"],
     },
     {
         "id": "1a2b3c4d-1111-4444-8888-aaaabbbbcccc",
-        "name": "Harassment - Severe",
-        "customer_ref": "internal-policy-102",
+        "name": "Targeted Harassment",
+        "parent_id": "397b80a0-e139-4e34-940d-12eec813cff5",
         "is_illegal": False,
         "is_non_violating": False,
+        "enforcement_actions": ["restrict_account", "remove_content"],
     },
     {
         "id": "2b3c4d5e-2222-4444-8888-bbbbccccdddd",
-        "name": "Harassment - Mild",
-        # Deliberately null: customer_ref is optional and a real policy tree will have
-        # gaps. Anything downstream that assumes it is populated should fail a test here.
-        "customer_ref": None,
+        "name": "Mild Harassment",
+        "parent_id": "397b80a0-e139-4e34-940d-12eec813cff5",
         "is_illegal": False,
         "is_non_violating": False,
+        "enforcement_actions": ["warn_user"],
     },
     {
         "id": "3c4d5e6f-3333-4444-8888-ccccddddeeee",
-        "name": "Adult Nudity",
-        "customer_ref": "internal-policy-104",
+        "name": "Explicit Imagery",
+        "parent_id": "5b2e8e33-3333-4d22-8b1f-9042cc031122",
         "is_illegal": False,
         "is_non_violating": False,
+        "enforcement_actions": ["remove_content", "shadow_ban"],
     },
     {
         "id": "4d5e6f70-4444-4444-8888-ddddeeeeffff",
-        "name": "Self-Harm and Suicide",
-        "customer_ref": "internal-policy-105",
+        "name": "Suicide and Self-Injury",
+        "parent_id": "6c3f9f44-4444-4e33-9c20-a153dd142233",
         "is_illegal": True,
         "is_non_violating": False,
+        "enforcement_actions": ["remove_content"],
     },
     {
         "id": "5e6f7081-5555-4444-8888-eeeeffff0000",
         "name": "Spam and Inauthentic Behaviour",
-        "customer_ref": "internal-policy-106",
+        "parent_id": "7d40a055-5555-4f44-ad31-b264ee253344",
         "is_illegal": False,
         "is_non_violating": False,
+        "enforcement_actions": ["restrict_account"],
     },
     {
-        # A non-violating policy: used to record a reviewed-and-cleared outcome. Metrics
-        # that count "decisions with a policy" as "violations" get this wrong.
-        "id": "6f708192-6666-4444-8888-ffff00001111",
-        "name": "Reviewed - No Violation",
-        "customer_ref": "internal-policy-107",
+        # Non-violating: a reviewed-and-cleared outcome. Counting "has a policy" as "is a
+        # violation" is one of the easiest ways to overstate enforcement.
+        "id": "77c4f022-53e8-4cb5-8275-98a656b6ba9b",
+        "name": "Non-Violating Report",
+        "parent_id": "397b80a0-e139-4e34-940d-12eec813cff5",
         "is_illegal": False,
         "is_non_violating": True,
+        "enforcement_actions": [],
+    },
+    # ---- a root policy applied directly, with no parent -----------------------------
+    {
+        "id": "3fd5d222-94ec-421a-a66a-288db8960907",
+        "name": "Automated Pre-Screen Reject",
+        "parent_id": None,
+        "is_illegal": False,
+        "is_non_violating": True,
+        "enforcement_actions": [],
     },
 ]
+
+PARENT_BY_ID = {p["id"]: p for p in POLICY_PARENTS}
 
 ENFORCEMENT_ACTIONS = [
     "ban_user",
@@ -121,12 +165,24 @@ ENFORCEMENT_ACTIONS = [
     "no_action",
 ]
 
+# Moderator populations. In-house reviewers and outsourced vendor teams sit side by side,
+# distinguished only by group membership — which is how vendor-level reporting is done.
+VENDOR_GROUPS = [
+    "NorthPoint BPO Moderator - Abuse Moderation",
+    "NorthPoint BPO Moderator - Image Review",
+    "Lakeside BPO Moderator - Abuse Moderation",
+]
+
 REVIEWERS = [
     {"name": "Ada Okafor", "email": "a.okafor@example.com", "groups": ["Everyone", "Reviewers"]},
     {"name": "Bruno Silva", "email": "b.silva@example.com", "groups": ["Everyone", "Reviewers"]},
     {"name": "Chen Wei", "email": "c.wei@example.com", "groups": ["Everyone", "Reviewers", "Escalation Team"]},
     {"name": "Dara Novak", "email": "d.novak@example.com", "groups": ["Everyone", "QA"]},
     {"name": "Elif Demir", "email": "e.demir@example.com", "groups": ["Everyone", "Admin", "Workflow Admins"]},
+    {"name": "Farid Haddad", "email": "f.haddad@vendor.example.net", "groups": ["Everyone", VENDOR_GROUPS[0]]},
+    {"name": "Grace Mwangi", "email": "g.mwangi@vendor.example.net", "groups": ["Everyone", VENDOR_GROUPS[0]]},
+    {"name": "Hugo Almeida", "email": "h.almeida@vendor.example.net", "groups": ["Everyone", VENDOR_GROUPS[1]]},
+    {"name": "Ivy Chen", "email": "i.chen@vendor.example.net", "groups": ["Everyone", VENDOR_GROUPS[2]]},
 ]
 
 WORKFLOWS = [
@@ -142,12 +198,23 @@ WORKFLOWS = [
         "rule": {"id": "8b9c0d1e-8888-4444-8888-222233334444", "name": "Duplicate report suppression"},
         "trigger_type": "DECISION_CREATED",
     },
+    {
+        "id": "9c0d1e2f-9999-4444-8888-333344445555",
+        "name": "Cancel stale low-priority jobs",
+        "rule": {"id": "0d1e2f30-aaaa-4444-8888-444455556666", "name": "Age over threshold"},
+        "trigger_type": "SCHEDULE",
+    },
 ]
 
-# Entity attribute bags differ by schema — that is the whole point of keeping them as a
-# VARIANT rather than flattening to a fixed set of columns. 'audio_clip' is included as a
-# schema the models have never seen, to prove they do not break on an unfamiliar one.
+# Entity attribute bags differ by schema — that is why they stay a VARIANT rather than
+# being flattened. 'audio_clip' is a schema the models have never seen, included to prove
+# they do not break on an unfamiliar one.
 ENTITY_SCHEMAS = ["user", "text_post", "image_post", "audio_clip"]
+
+# Observed categories, wider than the published enum. `qa_appeal` in particular does not
+# appear in the documentation.
+JOB_CATEGORIES_ACTIONED = ["standard", "appeal", "qa", "golden", "qa_appeal"]
+JOB_CATEGORIES_CLOSED = JOB_CATEGORIES_ACTIONED + ["training", "multi_review"]
 
 WORDS = (
     "market season figure record listen society practice ready stage moment reason "
@@ -160,13 +227,13 @@ def lorem(n: int) -> str:
 
 
 def iso(dt: datetime) -> str:
-    """Event time: ISO 8601, microseconds, explicit offset — as Cinder emits it."""
+    """Event time: ISO 8601, microseconds, explicit offset."""
     return dt.isoformat()
 
 
 def iso_zulu(dt: datetime) -> str:
-    """The other documented shape: Zulu, no fractional seconds. Both must parse."""
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    """The other observed shape: Zulu, microseconds or none. Both must parse."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
 
 
 def import_ts(dt: datetime) -> str:
@@ -185,6 +252,14 @@ def random_dt() -> datetime:
         seconds=rng.randint(0, 59),
         microseconds=rng.randint(0, 999999),
     )
+
+
+def hexid(n: int = 8) -> str:
+    return "".join(rng.choice("0123456789abcdef") for _ in range(n))
+
+
+def uuid_like() -> str:
+    return f"{hexid(8)}-{hexid(4)}-4{hexid(3)}-8{hexid(3)}-{hexid(12)}"
 
 
 def make_entity(schema: str, entity_id: str) -> dict:
@@ -222,43 +297,42 @@ def make_entity(schema: str, entity_id: str) -> dict:
     return {"entity_schema": schema, "attributes": attrs}
 
 
-def hexid(n: int = 8) -> str:
-    return "".join(rng.choice("0123456789abcdef") for _ in range(n))
-
-
-def uuid_like() -> str:
-    return f"{hexid(8)}-{hexid(4)}-4{hexid(3)}-8{hexid(3)}-{hexid(12)}"
+def user_block(reviewer: dict) -> dict:
+    return {
+        "name": reviewer["name"],
+        "email": reviewer["email"],
+        "groups": [{"name": g} for g in reviewer["groups"]],
+    }
 
 
 # -------------------------------------------------------------------------------------
-# Job pool — shared by all three events so referential integrity actually holds
+# Job pool — shared by both events so referential integrity actually holds
 # -------------------------------------------------------------------------------------
-
-JOB_CATEGORIES_ACTIONED = ["standard", "appeal", "qa", "golden"]
-# job.closed documents a wider enum than job.actioned, including these two extra values.
-JOB_CATEGORIES_CLOSED = JOB_CATEGORIES_ACTIONED + ["training", "multi_review"]
 
 
 def build_jobs(n: int) -> list[dict]:
     jobs = []
     for _ in range(n):
         schema = rng.choices(ENTITY_SCHEMAS, weights=[40, 35, 20, 5])[0]
-        created = random_dt()
         jobs.append(
             {
                 "id": uuid_like(),
                 "queue": rng.choice(QUEUES),
                 "entity": make_entity(schema, hexid(8)),
-                "created_at": created,
-                "category": rng.choices(JOB_CATEGORIES_CLOSED, weights=[70, 10, 8, 4, 4, 4])[0],
-                "num_reports": rng.randint(1, 9),
+                "created_at": random_dt(),
+                "category": rng.choices(JOB_CATEGORIES_CLOSED, weights=[62, 8, 7, 4, 9, 5, 5])[0],
+                "num_reports": rng.randint(0, 9),
                 "priority": rng.choice([0, 0, 0, 1, 2]),
+                # Which reviewer eventually handles it. Held here so job actions and the
+                # closing decision agree on who did the work — otherwise per-moderator
+                # handle time is built on unrelated rows.
+                "owner": rng.choice(REVIEWERS),
             }
         )
     return jobs
 
 
-JOBS = build_jobs(45)
+JOBS = build_jobs(60)
 
 
 # -------------------------------------------------------------------------------------
@@ -266,14 +340,15 @@ JOBS = build_jobs(45)
 # -------------------------------------------------------------------------------------
 
 ACTIONS_BY_SOURCE = {
-    "manual": ["skipped", "changed_queue", "escalated", "returned", "deferred", "assigned", "commented"],
+    "manual": ["created", "skipped", "changed_queue", "escalated", "returned", "deferred", "assigned", "commented"],
     "workflow": ["changed_queue", "cancelled", "escalated"],
     "auto": ["escalated", "deferred"],
-    "api": ["changed_queue", "cancelled"],
+    "api": ["created", "changed_queue", "cancelled"],
     "agent": ["skipped", "deferred"],
 }
 
 STATUS_AFTER = {
+    "created": "open",
     "skipped": "open",
     "changed_queue": "open",
     "escalated": "open",
@@ -287,378 +362,223 @@ STATUS_AFTER = {
 }
 
 
-def job_actioned_rows() -> list[tuple[str, str, str]]:
+def job_actioned_rows() -> tuple[list[tuple[str, str, str]], dict[str, int]]:
+    """
+    Returns the rows plus a per-job count of queue changes, so the closure generator can
+    stay consistent with the action history.
+    """
     rows: list[tuple[str, str, str]] = []
+    queue_changes: dict[str, int] = {}
 
-    for _ in range(34):
-        job = rng.choice(JOBS)
-        source = rng.choices(list(ACTIONS_BY_SOURCE), weights=[55, 20, 10, 10, 5])[0]
-        action = rng.choice(ACTIONS_BY_SOURCE[source])
-        ts = job["created_at"] + timedelta(minutes=rng.randint(1, 4000))
-        if ts > ANCHOR:
-            ts = ANCHOR - timedelta(minutes=rng.randint(1, 600))
+    for job in JOBS:
+        # Every job gets a creation action, then a variable number of movements. This is
+        # what makes "how many queue changes before a job closes" a real question with a
+        # real answer rather than a constant.
+        n_actions = rng.choices([1, 2, 3, 4, 6], weights=[35, 30, 20, 10, 5])[0]
+        cursor = job["created_at"]
 
-        if source == "manual":
-            reviewer = rng.choice(REVIEWERS)
-            made_by = {
-                "user": {
-                    "name": reviewer["name"],
-                    "email": reviewer["email"],
-                    "groups": [{"name": g} for g in reviewer["groups"]],
+        for i in range(n_actions):
+            if i == 0:
+                source, action = "manual", "created"
+            else:
+                source = rng.choices(list(ACTIONS_BY_SOURCE), weights=[60, 18, 9, 8, 5])[0]
+                action = rng.choice([a for a in ACTIONS_BY_SOURCE[source] if a != "created"])
+
+            cursor = cursor + timedelta(minutes=rng.randint(1, 900))
+            if cursor > ANCHOR:
+                cursor = ANCHOR - timedelta(minutes=rng.randint(1, 120))
+
+            if action == "changed_queue":
+                queue_changes[job["id"]] = queue_changes.get(job["id"], 0) + 1
+
+            if source == "manual":
+                reviewer = job["owner"] if rng.random() < 0.7 else rng.choice(REVIEWERS)
+                made_by = {"user": user_block(reviewer)}
+                notes = rng.choice([lorem(rng.randint(2, 6)), "", "", "wrong queue"])
+            elif source == "workflow":
+                wf = rng.choice(WORKFLOWS)
+                made_by = {
+                    "workflow": {
+                        "id": wf["id"],
+                        "name": wf["name"],
+                        "rule": wf["rule"],
+                        "event": {
+                            # The entity that TRIGGERED the workflow, which can differ from
+                            # the entity the action landed on.
+                            "entity": make_entity(rng.choice(["user", "text_post"]), hexid(8)),
+                            "event_name": rng.choice(["CLOSE_RELATED_JOBS", "SEND_TO_QUEUE", "ESCALATE"]),
+                        },
+                        "trigger_type": wf["trigger_type"],
+                    }
                 }
-            }
-            # An empty note is normal and must not be confused with a missing one.
-            notes = rng.choice([lorem(rng.randint(2, 6)), "", "", "wrong queue"])
-        elif source == "workflow":
-            wf = rng.choice(WORKFLOWS)
-            trigger_schema = rng.choice(["user", "text_post"])
-            made_by = {
-                "workflow": {
-                    "id": wf["id"],
-                    "name": wf["name"],
-                    "rule": wf["rule"],
-                    "event": {
-                        # The entity that TRIGGERED the workflow, which can differ from the
-                        # entity the action was taken on. Conflating the two is a real
-                        # modelling trap.
-                        "entity": make_entity(trigger_schema, hexid(8)),
-                        "event_name": rng.choice(["CLOSE_RELATED_JOBS", "SEND_TO_QUEUE", "ESCALATE"]),
-                    },
-                    "trigger_type": wf["trigger_type"],
-                }
-            }
-            notes = ""
-        else:
-            # auto / api / agent carry neither a user nor a workflow.
-            made_by = {}
-            notes = ""
+                notes = ""
+            else:
+                # auto / api / agent carry neither a user nor a workflow.
+                made_by = {}
+                notes = ""
 
-        payload = {
-            "job": {
+            job_block = {
                 "id": job["id"],
+                # Present in practice, though the published schema does not promise it.
+                # Job age at action time depends on it.
+                "created_at": iso_zulu(job["created_at"]),
                 "queue": job["queue"],
-                "entity": job["entity"],
                 "status": STATUS_AFTER.get(action, "open"),
                 "priority": job["priority"],
                 "num_reports": job["num_reports"],
                 "job_category": job["category"]
                 if job["category"] in JOB_CATEGORIES_ACTIONED
                 else "standard",
-            },
-            "notes": notes,
-            "action": action,
-            "source": source,
-            "timestamp": iso(ts),
-            "action_made_by": made_by,
-        }
-        rows.append(("job.actioned", json.dumps(payload, sort_keys=True), import_ts(ts)))
+            }
+
+            # Observed: the entity object is sometimes absent entirely. Models must not
+            # assume it is there.
+            if rng.random() < 0.75:
+                job_block["entity"] = job["entity"]
+
+            payload = {
+                "job": job_block,
+                "notes": notes,
+                "action": action,
+                "source": source,
+                "timestamp": iso(cursor),
+                "action_made_by": made_by,
+            }
+            rows.append(("job.actioned", json.dumps(payload, sort_keys=True), import_ts(cursor)))
 
     # ---- Edge case: duplicate delivery -------------------------------------------
-    # Identical payload, later ingestion timestamp. Deduplication must collapse this to
-    # one row; if the dedup key included import_ts it would not.
+    # Identical payload, later ingestion timestamp. Deduplication must collapse this to one
+    # row; a dedup key that included the ingestion timestamp would not.
     rows.append((rows[0][0], rows[0][1], import_ts(ANCHOR - timedelta(minutes=5))))
 
-    return rows
-
-
-# -------------------------------------------------------------------------------------
-# decision.created
-# -------------------------------------------------------------------------------------
-
-DECISION_TYPES = [
-    "queue_review",
-    "automated",
-    "cinder_workflow",
-    "agent",
-    "manual",
-    "investigate_review",
-    "bulk_action",
-    "api_decision",
-    "manual_override",
-    "qa",
-    "qa_override",
-]
-AUTOMATED_TYPES = {"automated", "cinder_workflow", "agent", "bulk_action", "api_decision"}
-
-
-def make_decision_payload(job: dict, dtype: str, ts: datetime, *, with_extras: bool = True) -> dict:
-    n_policies = rng.choices([1, 1, 1, 2, 3], weights=[50, 20, 10, 15, 5])[0]
-    policies = rng.sample(POLICIES, n_policies)
-    non_violating = all(p["is_non_violating"] for p in policies)
-
-    if non_violating:
-        actions = ["no_action"]
-    else:
-        actions = rng.sample([a for a in ENFORCEMENT_ACTIONS if a != "no_action"], rng.randint(1, 2))
-
-    entity = job["entity"]
-
-    payload: dict = {
-        "enforcement_actions": actions,
-        "enforcement_actions_removed": [],
-        "entity": dict(entity),
-        "timestamp": iso(ts),
-        "policies": [
-            {
-                "id": p["id"],
-                "name": p["name"],
-                "customer_ref": p["customer_ref"],
-                "is_illegal": p["is_illegal"],
-                "is_non_violating": p["is_non_violating"],
-            }
-            for p in policies
-        ],
-        "policies_removed": [],
-        "notes": rng.choice([lorem(rng.randint(3, 9)), "", ""]),
-        "source": {
-            "decision": {"id": uuid_like(), "type": dtype, "metadata": {}},
-            "job": {
-                "id": job["id"],
-                "created_at": iso(job["created_at"]),
-                "reports": [],
-                "queue": job["queue"],
-            },
-        },
-    }
-
-    # Human decisions carry a user; automated ones do not. Anything computing reviewer
-    # productivity has to handle the absence rather than assume a name is always there.
-    if dtype not in AUTOMATED_TYPES:
-        reviewer = rng.choice(REVIEWERS)
-        payload["source"]["user"] = {
-            "name": reviewer["name"],
-            "email": reviewer["email"],
-            "groups": [{"name": g} for g in reviewer["groups"]],
-        }
-
-    if with_extras and rng.random() < 0.45:
-        # Classifier predictions attached to the entity.
-        payload["entity"]["predictions"] = [
-            {
-                "inference_id": uuid_like(),
-                "attributes": [rng.choice(["caption", "biography", "transcript", "username"])],
-                "policy_id": policies[0]["id"],
-                "confidence": rng.choice(["HIGH", "MEDIUM", "LOW"]),
-                "score": round(rng.uniform(0.5, 0.999), 4),
-                "is_positive": True,
-            }
-        ]
-
-    if with_extras and rng.random() < 0.35:
-        change = rng.choice([1, 2, 3, 5, 8])
-        payload["point_updates"] = [
-            {
-                "points_change": change,
-                "points_total": change + rng.randint(0, 20),
-                "entity": {
-                    "entity_schema": entity["entity_schema"],
-                    "attributes": {"id": entity["attributes"]["id"]},
-                },
-            }
-        ]
-
-    return payload
-
-
-def decision_created_rows() -> list[tuple[str, str, str]]:
-    rows: list[tuple[str, str, str]] = []
-    decided_jobs = rng.sample(JOBS, 30)
-
-    for job in decided_jobs:
-        dtype = rng.choices(DECISION_TYPES, weights=[35, 15, 8, 6, 6, 5, 5, 5, 5, 5, 5])[0]
-        ts = job["created_at"] + timedelta(minutes=rng.randint(5, 5000))
-        if ts > ANCHOR:
-            ts = ANCHOR - timedelta(minutes=rng.randint(1, 300))
-        payload = make_decision_payload(job, dtype, ts)
-        rows.append(("decision.created", json.dumps(payload, sort_keys=True), import_ts(ts)))
-
-    # ---- Edge case: multi-review resolution ---------------------------------------
-    mr_job = next(j for j in JOBS if j["queue"]["is_multi_review"])
-    ts = mr_job["created_at"] + timedelta(hours=6)
-    payload = make_decision_payload(mr_job, "queue_review", ts, with_extras=False)
-    first, second = rng.sample(REVIEWERS, 2)
-    payload["resolution"] = {
-        "resolution_type": "agreement",
-        "resolution_path": [
-            {
-                "user": {"name": r["name"], "email": r["email"], "groups": [{"name": g} for g in r["groups"]]},
-                "notes": lorem(4),
-                "policies": [{"id": payload["policies"][0]["id"], "name": payload["policies"][0]["name"]}],
-                "timestamp": iso(ts - timedelta(minutes=offset)),
-            }
-            for r, offset in ((first, 40), (second, 20))
-        ],
-    }
-    rows.append(("decision.created", json.dumps(payload, sort_keys=True), import_ts(ts)))
-
-    # ---- Edge case: escalated multi-review ----------------------------------------
-    esc_job = [j for j in JOBS if j["queue"]["is_multi_review"]][1]
-    ts = esc_job["created_at"] + timedelta(hours=9)
-    payload = make_decision_payload(esc_job, "queue_review", ts, with_extras=False)
-    payload["resolution"] = {
-        "resolution_type": "escalation",
-        "resolution_path": [
-            {
-                "user": {
-                    "name": REVIEWERS[0]["name"],
-                    "email": REVIEWERS[0]["email"],
-                    "groups": [{"name": g} for g in REVIEWERS[0]["groups"]],
-                },
-                "notes": "disagree, escalating",
-                "policies": [],
-                "timestamp": iso(ts - timedelta(minutes=55)),
-            }
-        ],
-    }
-    rows.append(("decision.created", json.dumps(payload, sort_keys=True), import_ts(ts)))
-
-    # ---- Edge case: appeal resolution with an override chain -----------------------
-    # Three linked decisions: original applies a policy, an override removes it, an
-    # appeal decision applies a different one. The previous_decision chain is recursive.
-    ap_job = rng.choice([j for j in JOBS if j["category"] == "appeal"] or JOBS)
-    ts = ap_job["created_at"] + timedelta(days=2)
-    payload = make_decision_payload(ap_job, "manual_override", ts, with_extras=False)
-    original_policy = POLICIES[1]
-    payload["appeals_resolved"] = [
-        {
-            "appealer": {
-                "entity_schema": "user",
-                "attributes": {"id": hexid(8), "email": "appellant@example.net"},
-            },
-            "outcome": rng.choice(["accepted", "denied", "adjustment"]),
-            "source": rng.choice(["subject", "reporter", "unknown"]),
-        }
-    ]
-    payload["previous_decision"] = {
-        "policies": [],
-        "policies_removed": [{"id": original_policy["id"], "name": original_policy["name"]}],
-        "enforcement_actions_removed": ["warn_user"],
-        "notes": "override on review",
-        "user": {
-            "name": REVIEWERS[3]["name"],
-            "email": REVIEWERS[3]["email"],
-            "groups": [{"name": g} for g in REVIEWERS[3]["groups"]],
-        },
-        "previous_decision": {
-            "policies": [{"id": original_policy["id"], "name": original_policy["name"]}],
-            "policies_removed": [],
-            "enforcement_actions_removed": [],
-            "notes": "original decision",
-            "user": {
-                "name": REVIEWERS[1]["name"],
-                "email": REVIEWERS[1]["email"],
-                "groups": [{"name": g} for g in REVIEWERS[1]["groups"]],
-            },
-            "previous_decision": None,
-        },
-    }
-    rows.append(("decision.created", json.dumps(payload, sort_keys=True), import_ts(ts)))
-
-    # ---- Edge case: a cleared decision, policy present but non-violating -----------
-    clear_job = rng.choice(JOBS)
-    ts = clear_job["created_at"] + timedelta(hours=3)
-    payload = make_decision_payload(clear_job, "queue_review", ts, with_extras=False)
-    nv = POLICIES[-1]
-    payload["policies"] = [
-        {
-            "id": nv["id"],
-            "name": nv["name"],
-            "customer_ref": nv["customer_ref"],
-            "is_illegal": False,
-            "is_non_violating": True,
-        }
-    ]
-    payload["enforcement_actions"] = []
-    rows.append(("decision.created", json.dumps(payload, sort_keys=True), import_ts(ts)))
-
-    # ---- Edge case: duplicate delivery --------------------------------------------
-    rows.append((rows[0][0], rows[0][1], import_ts(ANCHOR - timedelta(minutes=3))))
-
-    return rows
+    return rows, queue_changes
 
 
 # -------------------------------------------------------------------------------------
 # job.closed
 # -------------------------------------------------------------------------------------
+# With decision.created out of scope, the `decisions` array inside job.closed is the ONLY
+# decision surface. Every decision-grain metric — handle time per decision, policy
+# distribution, automated share — is built from it.
+
+DECISION_SOURCE_TYPES = ["manual", "automated", "workflow", "api", "agent"]
+AUTOMATED_SOURCE_TYPES = {"automated", "workflow", "api", "agent"}
 
 
-def job_closed_rows(decision_rows: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
-    """
-    Closures are built from the decisions that were actually generated, so the
-    reconciliation test between fct_job_closures and fct_decisions has something real to
-    check. One closure is left deliberately unreconciled — see below.
-    """
-    by_job: dict[str, list[dict]] = {}
-    for _, payload_json, _ in decision_rows:
-        p = json.loads(payload_json)
-        job_id = p["source"]["job"]["id"]
-        by_job.setdefault(job_id, []).append(p)
+def make_closure_decision(job: dict, decided_at: datetime, source_type: str) -> dict:
+    n_policies = rng.choices([1, 1, 1, 2, 3], weights=[50, 20, 10, 15, 5])[0]
+    chosen = rng.sample(POLICIES, n_policies)
 
-    jobs_by_id = {j["id"]: j for j in JOBS}
+    policies = []
+    for p in chosen:
+        entry = {
+            "id": p["id"],
+            "name": p["name"],
+            "is_illegal": p["is_illegal"],
+            "is_non_violating": p["is_non_violating"],
+            # Nested per-policy enforcement actions. Not in the published schema.
+            "enforcement_actions": list(p["enforcement_actions"]),
+        }
+        # parent_id is absent on root policies, not null — so the model has to handle a
+        # missing key rather than a null value.
+        if p["parent_id"] is not None:
+            entry["parent_id"] = p["parent_id"]
+        policies.append(entry)
+
+    all_actions = sorted({a for p in chosen for a in p["enforcement_actions"]})
+    if not all_actions:
+        all_actions = ["no_action"]
+
+    decision: dict = {
+        "entity": job["entity"],
+        "enforcement_actions": all_actions,
+        "policies": policies,
+        "source": {"type": source_type},
+        "timestamp": iso_zulu(decided_at),
+    }
+
+    # A human decision names the reviewer. Automated ones do not, so per-moderator metrics
+    # have to exclude them rather than bucket them as unknown.
+    if source_type == "manual":
+        decision["source"]["user"] = user_block(
+            job["owner"] if rng.random() < 0.8 else rng.choice(REVIEWERS)
+        )
+
+    return decision
+
+
+def job_closed_rows() -> list[tuple[str, str, str]]:
     rows: list[tuple[str, str, str]] = []
 
-    for job_id, decisions in list(by_job.items())[:18]:
-        job = jobs_by_id.get(job_id)
-        if job is None:
-            continue
+    # Not every job closes within the window — an open backlog is normal and makes the
+    # closure rate a real number rather than 100%.
+    closing = rng.sample(JOBS, 42)
 
-        last_ts = max(
-            datetime.fromisoformat(d["timestamp"].replace("Z", "+00:00")) for d in decisions
-        )
-        closed_ts = last_ts + timedelta(seconds=rng.randint(2, 600))
-        if closed_ts > ANCHOR:
-            closed_ts = ANCHOR
+    for job in closing:
+        closed_at = job["created_at"] + timedelta(minutes=rng.randint(30, 9000))
+        if closed_at > ANCHOR:
+            closed_at = ANCHOR - timedelta(minutes=rng.randint(1, 60))
+
+        source_type = rng.choices(DECISION_SOURCE_TYPES, weights=[62, 16, 10, 7, 5])[0]
+
+        # Multi-review queues record more than one decision on the way to closure.
+        n_decisions = 2 if job["queue"]["is_multi_review"] and rng.random() < 0.6 else 1
+        decisions = []
+        for i in range(n_decisions):
+            d_at = closed_at - timedelta(minutes=rng.randint(1, 240) * (n_decisions - i))
+            if d_at < job["created_at"]:
+                d_at = job["created_at"] + timedelta(minutes=5)
+            decisions.append(
+                make_closure_decision(job, d_at, source_type if i == n_decisions - 1 else "manual")
+            )
 
         payload = {
             "job": {
                 "id": job["id"],
                 # Note the field name: job.closed uses `category`, job.actioned uses
-                # `job_category`. Same concept, different key.
+                # `job_category`. Same concept, different key, different enum width.
                 "category": job["category"],
                 "created_at": iso_zulu(job["created_at"]),
                 "queue": job["queue"],
                 "entity": job["entity"],
             },
-            "decisions": [
-                {
-                    "entity": d["entity"],
-                    "enforcement_actions": d["enforcement_actions"],
-                    "policies": [{"id": p["id"], "name": p["name"]} for p in d["policies"]],
-                    "source": {"type": "manual" if "user" in d["source"] else "automated"},
-                    "timestamp": d["timestamp"],
-                }
-                for d in decisions
-            ],
-            "timestamp": iso_zulu(closed_ts),
+            "decisions": decisions,
+            "timestamp": iso_zulu(closed_at),
         }
-        rows.append(("job.closed", json.dumps(payload, sort_keys=True), import_ts(closed_ts)))
+        rows.append(("job.closed", json.dumps(payload, sort_keys=True), import_ts(closed_at)))
 
-    # ---- Edge case: a closure with no matching decision.created --------------------
-    # Real and expected: if decision.created is not routed, or a decision predates the
-    # webhook subscription, a closure arrives with no decision-grain counterpart. The
-    # reconciliation test reports this at warning level rather than failing.
-    orphan = rng.choice([j for j in JOBS if j["id"] not in by_job])
-    closed_ts = orphan["created_at"] + timedelta(hours=5)
+    # ---- Edge case: a closure carrying a single non-violating policy ----------------
+    cleared = rng.choice([j for j in JOBS if j not in closing] or JOBS)
+    closed_at = cleared["created_at"] + timedelta(hours=2)
+    nv = next(p for p in POLICIES if p["is_non_violating"])
     payload = {
         "job": {
-            "id": orphan["id"],
-            "category": "training",
-            "created_at": iso_zulu(orphan["created_at"]),
-            "queue": orphan["queue"],
-            "entity": orphan["entity"],
+            "id": cleared["id"],
+            "category": "standard",
+            "created_at": iso_zulu(cleared["created_at"]),
+            "queue": cleared["queue"],
+            "entity": cleared["entity"],
         },
         "decisions": [
             {
-                "entity": orphan["entity"],
-                "enforcement_actions": ["warn_user"],
-                "policies": [{"id": POLICIES[2]["id"], "name": POLICIES[2]["name"]}],
-                "source": {"type": "manual"},
-                "timestamp": iso_zulu(closed_ts - timedelta(minutes=4)),
+                "entity": cleared["entity"],
+                "enforcement_actions": [],
+                "policies": [
+                    {
+                        "id": nv["id"],
+                        "name": nv["name"],
+                        "is_illegal": False,
+                        "is_non_violating": True,
+                        "enforcement_actions": [],
+                    }
+                ],
+                "source": {"type": "manual", "user": user_block(cleared["owner"])},
+                "timestamp": iso_zulu(closed_at - timedelta(minutes=6)),
             }
         ],
-        "timestamp": iso_zulu(closed_ts),
+        "timestamp": iso_zulu(closed_at),
     }
-    rows.append(("job.closed", json.dumps(payload, sort_keys=True), import_ts(closed_ts)))
+    rows.append(("job.closed", json.dumps(payload, sort_keys=True), import_ts(closed_at)))
 
     # ---- Edge case: duplicate delivery --------------------------------------------
     rows.append((rows[0][0], rows[0][1], import_ts(ANCHOR - timedelta(minutes=2))))
@@ -684,13 +604,14 @@ def write_seed(name: str, rows: list[tuple[str, str, str]]) -> None:
 
 def main() -> None:
     print("Generating Cinder webhook seeds")
-    actioned = job_actioned_rows()
-    decisions = decision_created_rows()
-    closed = job_closed_rows(decisions)
+    actioned, queue_changes = job_actioned_rows()
+    closed = job_closed_rows()
 
     write_seed("seed_cinder_job_actioned", actioned)
-    write_seed("seed_cinder_decision_created", decisions)
     write_seed("seed_cinder_job_closed", closed)
+
+    changed = sum(queue_changes.values())
+    print(f"  ({changed} queue changes across {len(queue_changes)} jobs)")
     print("Done.")
 
 

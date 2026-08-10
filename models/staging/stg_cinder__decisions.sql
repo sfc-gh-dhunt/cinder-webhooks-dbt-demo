@@ -1,99 +1,97 @@
 /*
-    One row per decision delivery.
+    Decision fact grain — one row per decision recorded on a closed job.
 
-    THE DECISION GRAIN LIVES HERE. `job.closed` also carries decisions, in its
-    `decisions` array, and modelling both as facts would double-count every decision on
-    any job that closed. This model is authoritative; the closure array is treated as
-    closure context only (see stg_cinder__job_closure_decisions).
+    THIS IS THE ONLY DECISION SURFACE. Cinder also emits `decision.created`, which is
+    richer — it carries decision ids, classifier predictions, point updates, appeal
+    outcomes and override chains. That event is out of scope here, so every decision-level
+    measure in this project comes from the `decisions` array inside `job.closed`.
 
-    Nested arrays are not flattened here. Each gets its own model at its own grain:
-    policies, enforcement actions, classifier predictions, point updates, appeals. That
-    keeps this model at exactly one row per decision, which is what makes it safe to
-    join to.
+    What that costs you, stated plainly, because it determines which questions are
+    answerable:
+
+      * No decision id. The key is synthesised from the closure key plus the decision's
+        position in the array.
+      * A coarse `source.type` instead of the fourteen-value decision type enum. You can
+        tell human from automated, but not `bulk_action` from `api_decision`.
+      * No classifier predictions, point updates, appeal outcomes or override chains.
+      * Decisions on jobs that never closed do not appear at all, and Cinder sends no
+        `job.closed` when a job closes with zero decisions — so this is a floor on
+        decision volume, not a total.
+
+    What it gives you, which is most of what matters operationally: who decided, when,
+    under which policies, with which enforcement, in which queue, on which entity type.
+
+    The policy objects here carry two fields the published schema does not document: a
+    `parent_id` forming a policy hierarchy, and a nested per-policy `enforcement_actions`
+    array. Both are modelled — see stg_cinder__decision_policies.
 */
 
-with base as (
-
-    select * from {{ ref('base_cinder__decision_created') }}
-
-),
-
-flattened as (
+with closures as (
 
     select
-          event_sk                                              as decision_event_sk
-
-        -- ---- Identity -------------------------------------------------------------
-        , payload:source:decision:id::varchar                   as decision_id
-        , payload:source:decision:type::varchar                 as decision_type
-
-        -- ---- Event time -----------------------------------------------------------
-        -- Payload timestamp, timezone-aware. Never first_seen_at, which is when the
-        -- ingestion layer happened to receive the delivery.
-        , {{ cinder_event_timestamp('payload:timestamp') }}     as decided_at
-
-        -- ---- Job context ----------------------------------------------------------
-        , payload:source:job:id::varchar                        as job_id
-        , {{ cinder_event_timestamp('payload:source:job:created_at') }} as job_created_at
-        , payload:source:job:queue:slug::varchar                as queue_slug
-        , payload:source:job:queue:is_multi_review::boolean     as queue_is_multi_review
-
-        -- ---- Entity under review --------------------------------------------------
-        -- entity_attributes stays a VARIANT on purpose. The keys vary by entity_schema:
-        -- a `user` carries email and username, a `text_post` carries caption and
-        -- object_url, and a customer-defined schema carries whatever they defined.
-        -- Flattening this to fixed columns would break on the first new schema and would
-        -- silently drop attributes in the meantime.
-        , payload:entity:entity_schema::varchar                 as entity_schema
-        , payload:entity:attributes:id::varchar                 as entity_id
-        , payload:entity:attributes                             as entity_attributes
-        , payload:entity:predictions                            as entity_predictions
-
-        -- ---- Who decided ----------------------------------------------------------
-        -- Absent for automated decisions. Null here means "no human", not "unknown
-        -- human", and anything computing reviewer productivity must exclude rather than
-        -- bucket these.
-        , payload:source:user:name::varchar                     as reviewer_name
-        , payload:source:user:email::varchar                    as reviewer_email
-        , payload:source:user:groups                            as reviewer_groups
-
-        -- ---- Outcome --------------------------------------------------------------
-        , payload:policies                                      as policies
-        , payload:policies_removed                              as policies_removed
-        , payload:enforcement_actions                           as enforcement_actions
-        , payload:enforcement_actions_removed                   as enforcement_actions_removed
-        , payload:point_updates                                 as point_updates
-        , payload:source:decision:metadata                      as decision_metadata
-
-        -- An empty string is a real value here: the reviewer left the note blank.
-        -- Distinguishing that from a missing key is worth doing, because "no reviewers
-        -- write notes" and "we do not capture notes" are different problems.
-        , payload:notes::varchar                                as notes
-
-        -- ---- Multi-review ---------------------------------------------------------
-        -- Present only on the final decision of a multi-review job; Cinder sends no
-        -- webhook for the intermediate ones. So a multi-review job yields exactly one
-        -- decision row, with the earlier reviews recorded inside resolution_path.
-        , payload:resolution:resolution_type::varchar           as resolution_type
-        , payload:resolution:resolution_path                    as resolution_path
-
-        -- ---- Appeals --------------------------------------------------------------
-        -- A non-empty array means this decision resolved one or more appeals. The
-        -- documented, future-proof way to detect an appeal outcome — the legacy
-        -- appeal-specific decision types (override / confirm / revert) and the
-        -- deprecated `appeal` field are both avoided here.
-        , payload:appeals_resolved                              as appeals_resolved
-
-        -- ---- Override chain -------------------------------------------------------
-        , payload:previous_decision                             as previous_decision
-
-        -- ---- Delivery lineage -----------------------------------------------------
+          job_closure_event_sk
+        , job_id
+        , closed_at
+        , job_created_at
+        , job_category
+        , queue_slug
+        , queue_is_multi_review
+        , entity_schema        as job_entity_schema
+        , entity_id            as job_entity_id
+        , closure_decisions
+        , closure_decision_count
         , first_seen_at
         , delivery_count
         , was_redelivered
         , record_source
+    from {{ ref('stg_cinder__job_closures') }}
 
-    from base
+),
+
+exploded as (
+
+    select
+          c.job_closure_event_sk
+        , c.job_id
+        , c.closed_at
+        , c.job_created_at
+        , c.job_category
+        , c.queue_slug
+        , c.queue_is_multi_review
+        , c.closure_decision_count                               as decisions_on_job
+        , c.first_seen_at
+        , c.delivery_count
+        , c.was_redelivered
+        , c.record_source
+
+        , d.index::number                                        as decision_ordinal
+        , {{ cinder_event_timestamp('d.value:timestamp') }}       as decided_at
+
+        -- Coarse origin. `manual` is the only value that implies a human; everything else
+        -- is machine-driven.
+        , d.value:source:type::varchar                            as decision_source_type
+
+        -- The reviewer, when the decision was made by a person. Absent on automated
+        -- decisions, so per-moderator metrics must exclude rather than bucket these.
+        , d.value:source:user:name::varchar                       as reviewer_name
+        , d.value:source:user:email::varchar                      as reviewer_email
+        , d.value:source:user:groups                              as reviewer_groups
+
+        -- The entity as it was at decision time. Usually the job's entity, but taken from
+        -- the decision rather than the job so a decision on a different entity is not
+        -- silently reattributed. Falls back to the job's entity when absent.
+        , coalesce(d.value:entity:entity_schema::varchar, c.job_entity_schema)
+                                                                  as entity_schema
+        , coalesce(d.value:entity:attributes:id::varchar, c.job_entity_id)
+                                                                  as entity_id
+        , d.value:entity:attributes                               as entity_attributes
+
+        , d.value:policies                                        as policies
+        , d.value:enforcement_actions                             as enforcement_actions
+        , d.value:notes::varchar                                  as notes
+
+    from closures c
+    , lateral flatten(input => c.closure_decisions) d
 
 ),
 
@@ -102,96 +100,83 @@ derived as (
     select
           *
 
-        -- Human or machine. The distinction drives the automation-rate metric and is not
-        -- inferable from the presence of a user alone, because some human-originated
-        -- types (bulk_action, api_decision) carry no user object.
-        , case
-              when decision_type in (
-                    'automated', 'cinder_workflow', 'agent', 'bulk_action', 'api_decision'
-              ) then 'automated'
-              else 'human'
-          end                                                   as decision_actor_type
-
-        , array_size(coalesce(policies, array_construct()))     as policy_count
+        , array_size(coalesce(policies, array_construct()))       as policy_count
         , array_size(coalesce(enforcement_actions, array_construct()))
-                                                                as enforcement_action_count
-        , array_size(coalesce(policies_removed, array_construct()))
-                                                                as policy_removed_count
-        , array_size(coalesce(appeals_resolved, array_construct()))
-                                                                as appeal_resolved_count
-        , array_size(coalesce(resolution_path, array_construct()))
-                                                                as prior_review_count
+                                                                  as enforcement_action_count
 
-        , resolution_type is not null                           as is_multi_review_resolution
-        , array_size(coalesce(appeals_resolved, array_construct())) > 0
-                                                                as resolves_appeal
-        , previous_decision is not null                         as is_override
+        , decision_source_type = 'manual'                         as is_human_decision
+        , decision_source_type is distinct from 'manual'           as is_automated
 
-        -- Depth of the override chain. Measured to five levels, which is well past
-        -- anything observed; a deeper chain reports as 5 rather than silently as 1.
-        -- Snowflake has no recursive VARIANT walk, so this is explicit by design.
-        , case
-              when previous_decision is null then 0
-              when previous_decision:previous_decision is null then 1
-              when previous_decision:previous_decision:previous_decision is null then 2
-              when previous_decision:previous_decision:previous_decision:previous_decision is null then 3
-              when previous_decision:previous_decision:previous_decision:previous_decision:previous_decision is null then 4
-              else 5
-          end                                                   as override_chain_depth
-
-        -- Latency from job creation to decision. Null when job_created_at is absent
-        -- rather than defaulting to zero, because a fabricated zero would drag every
-        -- average down and look like excellent performance.
+        -- Handle time. Job creation to decision, which is the measure the moderation team
+        -- means by "handle time" when comparing queues and moderators.
+        --
+        -- Null rather than zero when creation time is missing: a fabricated zero would
+        -- read as instant resolution and flatter every average it lands in.
         , case
               when job_created_at is not null and decided_at is not null
               then datediff('second', job_created_at, decided_at)
-          end                                                   as decision_latency_seconds
+          end                                                     as handle_time_seconds
 
-        , notes is not null and length(trim(notes)) > 0          as has_notes
+        , notes is not null and length(trim(notes)) > 0            as has_notes
 
-    from flattened
+        -- Whether any applied policy is a real violation. A decision carrying only
+        -- non-violating policies is a reviewed-and-cleared outcome; counting it as
+        -- enforcement is one of the easiest ways to overstate the numbers.
+        , coalesce(
+              array_size(
+                  filter(policies, p -> p:is_non_violating::boolean = false)
+              ) > 0,
+              false
+          )                                                       as is_violating_outcome
+
+        , coalesce(
+              array_size(
+                  filter(policies, p -> p:is_illegal::boolean = true)
+              ) > 0,
+              false
+          )                                                       as is_illegal_outcome
+
+    from exploded
 
 )
 
 select
-      decision_event_sk
-    , decision_id
-    , decision_type
-    , decision_actor_type
-    , decided_at
+      {{ dbt_utils.generate_surrogate_key(['job_closure_event_sk', 'decision_ordinal']) }}
+                                                                  as decision_sk
+    , job_closure_event_sk
+    , decision_ordinal
     , job_id
+    , decided_at
+    , closed_at
     , job_created_at
-    , decision_latency_seconds
+    , handle_time_seconds
+    , job_category
     , queue_slug
     , queue_is_multi_review
-    , entity_schema
-    , entity_id
-    , entity_attributes
-    , entity_predictions
+    , decision_source_type
+    , is_human_decision
+    , is_automated
     , reviewer_name
     , reviewer_email
     , reviewer_groups
+    , entity_schema
+    , entity_id
+    , entity_attributes
     , policies
-    , policies_removed
+    , policy_count
     , enforcement_actions
-    , enforcement_actions_removed
-    , point_updates
-    , decision_metadata
+    , enforcement_action_count
     , notes
     , has_notes
-    , policy_count
-    , policy_removed_count
-    , enforcement_action_count
-    , resolution_type
-    , resolution_path
-    , prior_review_count
-    , is_multi_review_resolution
-    , appeals_resolved
-    , appeal_resolved_count
-    , resolves_appeal
-    , previous_decision
-    , is_override
-    , override_chain_depth
+    , is_violating_outcome
+    , is_illegal_outcome
+    , decisions_on_job
+
+    -- True when this was the last decision before the job closed. For a multi-review job
+    -- the earlier decisions are the individual reviews and the last is the resolution, so
+    -- "one decision per closed job" means filtering on this.
+    , decision_ordinal = decisions_on_job - 1                     as is_final_decision
+
     , first_seen_at
     , delivery_count
     , was_redelivered

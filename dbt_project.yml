@@ -60,8 +60,7 @@ vars:
   #
   #   cinder_source_mode_by_event:
   #     job_actioned: 'raw'
-  #     job_closed: 'raw'
-  #     decision_created: 'seed'
+  #     job_closed: 'seed'
   #
   # Anything not listed falls back to cinder_source_mode above.
   cinder_source_mode_by_event: {}
@@ -93,10 +92,6 @@ models:
       # the staging views read as a single query.
       base:
         +materialized: ephemeral
-
-    intermediate:
-      +schema: 'INTERMEDIATE'
-      +materialized: ephemeral
 
     marts:
       +schema: 'MARTS'

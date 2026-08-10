@@ -56,27 +56,9 @@ CREATE TABLE IF NOT EXISTS JOB_CLOSED (
 COMMENT = 'Raw job.closed webhook events as landed by the ingestion layer';
 
 -- -------------------------------------------------------------------------------------
--- decision.created — a moderation decision was recorded
--- -------------------------------------------------------------------------------------
--- This is the richest and most analytically valuable of the three events, and the one
--- most likely to be missing from an initial ingestion setup: routing it requires a
--- change to the ingestion flow.
---
--- The table is created here regardless, so the dbt project builds green against an empty
--- source while that change is pending. Every model in this project tolerates an empty or
--- absent source — see macros/cinder_source_or_seed.sql.
-CREATE TABLE IF NOT EXISTS DECISION_CREATED (
-    EVENT       VARCHAR         COMMENT 'Webhook event name, always decision.created',
-    PAYLOAD     VARIANT         COMMENT 'Full webhook payload object',
-    IMPORT_TS   TIMESTAMP_NTZ   COMMENT 'Ingestion wall-clock time. NOT event time — see payload.timestamp'
-)
-COMMENT = 'Raw decision.created webhook events as landed by the ingestion layer';
-
--- -------------------------------------------------------------------------------------
 -- Verification
 -- -------------------------------------------------------------------------------------
 SHOW TABLES IN SCHEMA CINDER_RAW.OPENFLOW_CINDER;
 
 SELECT 'JOB_ACTIONED' AS table_name, COUNT(*) AS row_count FROM JOB_ACTIONED
-UNION ALL SELECT 'JOB_CLOSED', COUNT(*) FROM JOB_CLOSED
-UNION ALL SELECT 'DECISION_CREATED', COUNT(*) FROM DECISION_CREATED;
+UNION ALL SELECT 'JOB_CLOSED', COUNT(*) FROM JOB_CLOSED;

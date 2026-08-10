@@ -23,6 +23,7 @@ cinder_webhooks:
     # local development against the same objects.
     dev:
       type: snowflake
+      role: CINDER_DBT_PROD_ROLE
       database: CINDER_ANALYTICS
       schema: PUBLIC          # every model sets its own schema explicitly; see dbt_project.yml
       warehouse: CINDER_DEMO_WH
@@ -32,6 +33,7 @@ cinder_webhooks:
     # each pull request builds into its own throwaway namespace.
     ci:
       type: snowflake
+      role: CINDER_DBT_CI_ROLE
       database: CINDER_ANALYTICS
       schema: PUBLIC
       warehouse: CINDER_DEMO_WH

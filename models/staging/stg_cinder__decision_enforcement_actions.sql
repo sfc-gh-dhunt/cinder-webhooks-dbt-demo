@@ -1,107 +1,98 @@
 /*
     One row per decision per enforcement action.
 
-    Enforcement actions arrive as a bare array of slugs — no ids, no names, no metadata.
-    So the enforcement action dimension is built from the observed slugs rather than from
-    any reference table, which means it only ever contains actions that have actually been
-    applied. An action configured in Cinder but never used will not appear.
+    Enforcement arrives twice in each decision, at two different grains, and the difference
+    matters:
 
-    `enforcement_actions_removed` is modelled here too, as a separate row flavour rather
-    than a separate model, because "removed a ban" and "applied a ban" belong on the same
-    axis for anything measuring net enforcement.
+      * `decision.enforcement_actions` — the union of actions across the whole decision.
+        This is what was actually applied to the entity.
+      * `policy.enforcement_actions` — the actions attributable to each individual policy.
+
+    This model uses the DECISION-LEVEL array, because it answers "what enforcement was
+    applied". Summing the per-policy arrays instead would double-count any action that two
+    policies both call for, which is common — several harassment policies all warn.
+
+    Per-policy attribution lives in stg_cinder__decision_policies, where it belongs.
+
+    Actions arrive as bare slugs: no ids, no display names, no severity. So the enforcement
+    dimension is built from observed usage and severity is a local convention. See
+    dim_enforcement_action.
 */
 
 with decisions as (
 
     select
-          decision_event_sk
-        , decision_id
-        , decided_at
+          decision_sk
+        , job_closure_event_sk
         , job_id
+        , decided_at
+        , closed_at
+        , job_category
         , queue_slug
         , entity_schema
         , entity_id
-        , decision_type
-        , decision_actor_type
+        , decision_source_type
+        , is_automated
+        , is_human_decision
         , reviewer_email
+        , handle_time_seconds
         , enforcement_actions
-        , enforcement_actions_removed
+        , enforcement_action_count
     from {{ ref('stg_cinder__decisions') }}
 
 ),
 
-applied as (
+exploded as (
 
     select
-          d.decision_event_sk
-        , d.decision_id
-        , d.decided_at
+          d.decision_sk
+        , d.job_closure_event_sk
         , d.job_id
+        , d.decided_at
+        , d.closed_at
+        , d.job_category
         , d.queue_slug
         , d.entity_schema
         , d.entity_id
-        , d.decision_type
-        , d.decision_actor_type
+        , d.decision_source_type
+        , d.is_automated
+        , d.is_human_decision
         , d.reviewer_email
-        , 'applied'                                 as action_disposition
-        , a.index::number                           as action_ordinal
-        , a.value::varchar                          as enforcement_action_slug
+        , d.handle_time_seconds
+        , d.enforcement_action_count                        as actions_on_decision
+
+        , a.index::number                                   as action_ordinal
+        , a.value::varchar                                  as enforcement_action_slug
+
     from decisions d
     , lateral flatten(input => d.enforcement_actions) a
-
-),
-
-removed as (
-
-    select
-          d.decision_event_sk
-        , d.decision_id
-        , d.decided_at
-        , d.job_id
-        , d.queue_slug
-        , d.entity_schema
-        , d.entity_id
-        , d.decision_type
-        , d.decision_actor_type
-        , d.reviewer_email
-        , 'removed'                                 as action_disposition
-        , a.index::number                           as action_ordinal
-        , a.value::varchar                          as enforcement_action_slug
-    from decisions d
-    , lateral flatten(input => d.enforcement_actions_removed) a
-
-),
-
-combined as (
-
-    -- UNION ALL, not UNION. The two branches are disjoint by construction
-    -- (action_disposition differs), so deduplication would do nothing except add a sort.
-    select * from applied
-    union all
-    select * from removed
 
 )
 
 select
-      {{ dbt_utils.generate_surrogate_key([
-            'decision_event_sk', 'action_disposition', 'enforcement_action_slug', 'action_ordinal'
-        ]) }}                                       as decision_enforcement_action_sk
-    , decision_event_sk
-    , decision_id
+      {{ dbt_utils.generate_surrogate_key(['decision_sk', 'enforcement_action_slug', 'action_ordinal']) }}
+                                                            as decision_enforcement_action_sk
+    , decision_sk
+    , job_closure_event_sk
     , enforcement_action_slug
-    , action_disposition
     , action_ordinal
+    , actions_on_decision
 
-    -- Signed so that summing gives net enforcement rather than gross activity.
-    , case when action_disposition = 'applied' then 1 else -1 end
-                                                    as enforcement_action_signed_count
+    -- `no_action` is a recorded outcome, not an absence of one. Counting it as enforcement
+    -- inflates every enforcement metric, so it is flagged rather than filtered — the
+    -- decision about whether to include it belongs to the consumer, not to this model.
+    , enforcement_action_slug = 'no_action'                 as is_no_action
 
     , decided_at
+    , closed_at
     , job_id
+    , job_category
     , queue_slug
     , entity_schema
     , entity_id
-    , decision_type
-    , decision_actor_type
+    , decision_source_type
+    , is_automated
+    , is_human_decision
     , reviewer_email
-from combined
+    , handle_time_seconds
+from exploded

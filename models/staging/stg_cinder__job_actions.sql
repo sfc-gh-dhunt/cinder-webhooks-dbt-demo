@@ -36,6 +36,11 @@ flattened as (
 
         -- ---- Job context ----------------------------------------------------------
         , payload:job:id::varchar                               as job_id
+
+        -- Present in practice, though the published schema does not promise it. Job age at
+        -- action time depends on it, so it is extracted with a null-tolerant cast rather
+        -- than assumed.
+        , {{ cinder_event_timestamp('payload:job:created_at') }}  as job_created_at
         , payload:job:queue:slug::varchar                       as queue_slug
         , payload:job:queue:is_multi_review::boolean            as queue_is_multi_review
 
@@ -101,6 +106,18 @@ derived as (
         , action in ('cancelled')                   as is_cancellation
         , notes is not null and length(trim(notes)) > 0 as has_notes
 
+        -- How old the job was when this action was taken. The basis of "median age of a
+        -- job that has been actioned". Null when creation time is absent rather than zero —
+        -- a fabricated zero would read as an instantly-handled job.
+        , case
+              when job_created_at is not null and actioned_at is not null
+              then datediff('second', job_created_at, actioned_at)
+          end                                       as job_age_at_action_seconds
+
+        -- The entity object is sometimes absent from this event entirely. Flagged so a
+        -- missing entity is visibly a property of the payload rather than a modelling gap.
+        , entity_id is not null                     as has_entity
+
     from flattened
 
 )
@@ -112,6 +129,8 @@ select
     , actor_type
     , actioned_at
     , job_id
+    , job_created_at
+    , job_age_at_action_seconds
     , job_status_after
     , job_category
     , job_priority
@@ -121,6 +140,7 @@ select
     , entity_schema
     , entity_id
     , entity_attributes
+    , has_entity
     , actor_user_name
     , actor_user_email
     , actor_user_groups
