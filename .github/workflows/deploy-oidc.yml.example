@@ -98,9 +98,10 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
+          cache-dependency-path: requirements-ci.txt
 
       - name: Install Snowflake CLI
-        run: pip install --quiet snowflake-cli
+        run: pip install --quiet --requirement requirements-ci.txt
 
       - name: Configure Snowflake connection
         # No secret, no key file. The audience must match what the Snowflake side expects; the
