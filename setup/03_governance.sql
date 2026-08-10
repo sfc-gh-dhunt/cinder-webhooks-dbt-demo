@@ -199,39 +199,20 @@ ALTER TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY SET
 -- -------------------------------------------------------------------------------------
 -- Step 6 — Tag the columns
 -- -------------------------------------------------------------------------------------
--- Applied to the marts, which is where analysts read. Tagging is idempotent.
+-- MOVED OUT, deliberately: see setup/05_apply_column_tags.sql.
 --
--- NOTE ON REBUILD BEHAVIOUR: these tables are rebuilt by dbt. A CREATE OR REPLACE drops
--- column tags with it, so this step must run after each full rebuild of a tagged table. The
--- deploy target in the Makefile chains it for that reason, and it is why tag-based masking
--- is worth the setup — reapplying five tags is tractable, reapplying dozens of individual
--- policy attachments is not.
-
--- Moderator identity.
-ALTER TABLE CINDER_ANALYTICS.MARTS.DIM_REVIEWER
-    MODIFY COLUMN REVIEWER_EMAIL SET TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY = 'EMAIL';
-ALTER TABLE CINDER_ANALYTICS.MARTS.DIM_REVIEWER
-    MODIFY COLUMN REVIEWER_NAME SET TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY = 'NAME';
-
--- Entity identity and content. `entity_id` is hashed rather than blanked so it stays
--- joinable and countable.
-ALTER TABLE CINDER_ANALYTICS.MARTS.DIM_ENTITY
-    MODIFY COLUMN ENTITY_EMAIL SET TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY = 'EMAIL';
-ALTER TABLE CINDER_ANALYTICS.MARTS.DIM_ENTITY
-    MODIFY COLUMN ENTITY_USERNAME SET TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY = 'USERNAME';
-ALTER TABLE CINDER_ANALYTICS.MARTS.DIM_ENTITY
-    MODIFY COLUMN ENTITY_CAPTION SET TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY = 'FREE_TEXT';
-ALTER TABLE CINDER_ANALYTICS.MARTS.DIM_ENTITY
-    MODIFY COLUMN ENTITY_ATTRIBUTES SET TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY = 'IDENTIFIER';
-
--- Moderator emails carried on the facts as degenerate dimensions. Easy to forget, and they
--- are the same personal data as in the dimension.
-ALTER TABLE CINDER_ANALYTICS.MARTS.FCT_DECISIONS
-    MODIFY COLUMN REVIEWER_EMAIL SET TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY = 'EMAIL';
-ALTER TABLE CINDER_ANALYTICS.MARTS.FCT_JOB_ACTIONS
-    MODIFY COLUMN ACTOR_USER_EMAIL SET TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY = 'EMAIL';
-ALTER TABLE CINDER_ANALYTICS.MARTS.FCT_JOBS
-    MODIFY COLUMN FINAL_REVIEWER_EMAIL SET TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY = 'EMAIL';
+-- Column tags do not survive a rebuild. dbt materialises with CREATE OR REPLACE, which
+-- replaces the object, and the tags belonged to the old object's columns. The new table
+-- arrives untagged — and because masking here is tag-driven, untagged means unmasked, with
+-- no error raised. So tag application has to run after every build, which makes it part of
+-- deployment rather than part of one-time setup.
+--
+-- Leaving it here would drag this whole file — role creation, policy DDL, ACCOUNTADMIN —
+-- into the deploy path, and a CI user would need ACCOUNTADMIN to publish a model.
+--
+-- The deploy role needs APPLY on the tag to do that job. This is the one grant that makes
+-- the split possible, and it is far narrower than the alternative.
+GRANT APPLY ON TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY TO ROLE CINDER_DBT_PROD_ROLE;
 
 -- -------------------------------------------------------------------------------------
 -- Step 7 — Protect the raw payloads directly

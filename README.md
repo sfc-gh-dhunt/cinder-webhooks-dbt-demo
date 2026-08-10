@@ -238,7 +238,7 @@ treat membership of that role as the whole access decision.
 
 **A dbt rebuild drops column tags.** dbt uses `CREATE OR REPLACE`, which takes the tags with
 it, and the masking policies are attached *by tag*. An untagged column is an unmasked column.
-`make deploy-run` and the deploy workflow both reapply `setup/03_governance.sql` for exactly
+`make deploy-run` and the deploy workflow both reapply `setup/05_apply_column_tags.sql` for exactly
 this reason. It is idempotent and cheap; forgetting it is a data-protection incident.
 
 ---
@@ -360,6 +360,8 @@ setup/                  Snowflake objects. Run in order; all idempotent.
   01_account_setup.sql     databases, schemas, warehouse, EAI, roles
   02_raw_tables.sql        landing tables matching the ingestion output shape
   03_governance.sql        PII tag, masking policies, classification profile
+  04b_ci_access.sql        CI service users, keypair auth, runner network access
+  05_apply_column_tags.sql Reapply PII tags — MUST run after every rebuild
   04_operations.sql        data metric functions, scheduled task, alerts
   99_teardown.sql          drop everything
 

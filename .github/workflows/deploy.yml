@@ -103,7 +103,12 @@ jobs:
         # This is the single most important step in this file. It is idempotent and cheap, and
         # it runs on every deploy because forgetting it is a data-protection incident rather
         # than an inconvenience.
-        run: snow sql -c prod -f setup/03_governance.sql
+        #
+        # It runs 05_apply_column_tags.sql, NOT the whole governance script. The governance
+        # script creates roles and policy DDL and needs ACCOUNTADMIN; requiring that to
+        # publish a model would give the deploy identity the run of the account. The tag
+        # script needs only OWNERSHIP of the tables it just built and APPLY on the tag.
+        run: snow sql -c prod -f setup/05_apply_column_tags.sql
 
       - name: Optional full build
         if: ${{ inputs.run_after_deploy }}

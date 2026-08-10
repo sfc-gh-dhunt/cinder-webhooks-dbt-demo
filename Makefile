@@ -61,6 +61,16 @@ setup-raw: ## Landing tables matching the ingestion layer's output shape
 setup-governance: ## PII tag, masking policies, classification profile
 	$(SNOW) sql -f setup/03_governance.sql
 
+.PHONY: apply-tags
+apply-tags: ## Reapply PII column tags (needed after every rebuild)
+	@# Column tags do not survive CREATE OR REPLACE, and masking is attached by tag — so a
+	@# rebuild silently unmasks. Chained into deploy-run for that reason.
+	$(SNOW) sql -f setup/05_apply_column_tags.sql
+
+.PHONY: setup-ci-access
+setup-ci-access: ## Service users, keypair auth and CI network access
+	$(SNOW) sql -f setup/04b_ci_access.sql
+
 .PHONY: setup-operations
 setup-operations: ## Data metric functions, scheduled task, alerts
 	$(SNOW) sql -f setup/04_operations.sql
@@ -139,7 +149,7 @@ deploy-run: deploy ## Deploy, run in Snowflake, then reapply column tags
 	@# A dbt rebuild uses CREATE OR REPLACE, which drops column tags — and the masking
 	@# policies are attached BY tag. An untagged column is an unmasked column, so this is not
 	@# optional housekeeping.
-	$(MAKE) setup-governance
+	$(MAKE) apply-tags
 
 .PHONY: run-remote
 run-remote: ## Run the deployed project inside Snowflake
