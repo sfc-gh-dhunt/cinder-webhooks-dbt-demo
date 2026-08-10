@@ -1,0 +1,22 @@
+# dbt
+target/
+dbt_packages/
+logs/
+.user.yml
+package-lock.yml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Never commit credentials
+*.p8
+*.pem
+.env

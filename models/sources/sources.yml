@@ -1,0 +1,124 @@
+version: 2
+
+sources:
+  - name: cinder
+    description: >
+      Raw Cinder Trust & Safety webhook events as landed by the ingestion layer.
+
+      Each table holds one event type. A row is the webhook body plus an ingestion
+      timestamp: `EVENT` is the event name, `PAYLOAD` is the whole payload object as a
+      VARIANT, and `IMPORT_TS` is when the ingestion layer received it.
+
+      Nothing in this schema is modelled — it is the untouched landing zone. All
+      interpretation happens in staging.
+
+    database: "{{ var('raw_database') }}"
+    schema: "{{ var('raw_schema') }}"
+
+    # -------------------------------------------------------------------------------
+    # Freshness
+    # -------------------------------------------------------------------------------
+    # IMPORT_TS is TIMESTAMP_NTZ — wall-clock with no timezone, because that is how the
+    # ingestion layer writes it. Comparing a naive timestamp to `current_timestamp` is
+    # ambiguous, so the offset is attached explicitly rather than left to the session
+    # timezone. The ingestion runtime writes UTC.
+    #
+    # This is asserted twice, deliberately, and the duplication is the point:
+    #
+    #   * here, as a BUILD GATE  — `dbt source freshness` fails the pipeline rather than
+    #     letting models rebuild on stale data and publish a confidently wrong answer.
+    #
+    #   * again as a Snowflake data metric function in setup/04_operations.sql, as
+    #     CONTINUOUS ALERTING — because if ingestion stops at 03:00 and no dbt run is
+    #     scheduled until 06:00, no dbt test will ever notice. DMFs run on their own
+    #     schedule and do not need the dbt project to execute.
+    #
+    # Same assertion, two different consumers. Every other check lives on exactly one
+    # side of that line: dbt owns logic, DMFs own state.
+    loaded_at_field: >
+      to_timestamp_tz(to_varchar(import_ts, 'YYYY-MM-DD HH24:MI:SS.FF3') || ' +0000')
+
+    freshness:
+      warn_after: { count: 6, period: hour }
+      error_after: { count: 24, period: hour }
+
+    tables:
+      - name: job_actioned
+        identifier: JOB_ACTIONED
+        description: >
+          A job action was created — the job moved queue, was escalated, skipped,
+          deferred, returned, cancelled, paused, resumed, assigned or commented on.
+
+          This event is NOT sent when a decision is made on a job. Decisions arrive on
+          `decision.created`. A pipeline that treats job actions as the record of
+          moderation outcomes will undercount decisions to zero.
+        columns:
+          - name: EVENT
+            description: Always `job.actioned`.
+            tests:
+              - not_null
+          - name: PAYLOAD
+            description: Full payload object. Interpreted in staging.
+            tests:
+              - not_null
+          - name: IMPORT_TS
+            description: >
+              Ingestion wall-clock time. Not event time — see `payload.timestamp`.
+
+      - name: job_closed
+        identifier: JOB_CLOSED
+        description: >
+          All review work on a job completed and the job moved to a closed state. Fires
+          once per job, and carries every decision that contributed to the closure.
+
+          Two things to know before using this event:
+
+          1. It is not subscribed by default on a new webhook endpoint — it must be
+             enabled explicitly in the Cinder endpoint configuration.
+
+          2. No event is sent when a job closes with zero production decisions. Closure
+             counts derived from this event therefore understate real closures. This is
+             asserted as a warning-level test rather than hidden.
+        columns:
+          - name: EVENT
+            description: Always `job.closed`.
+            tests:
+              - not_null
+          - name: PAYLOAD
+            description: >
+              Full payload object, including the `decisions` array. That array duplicates
+              data also delivered on `decision.created`; this project treats
+              `decision.created` as authoritative for the decision grain to avoid
+              double-counting.
+            tests:
+              - not_null
+          - name: IMPORT_TS
+            description: Ingestion wall-clock time. Not event time.
+
+      - name: decision_created
+        identifier: DECISION_CREATED
+        description: >
+          A moderation decision was recorded — by a human reviewer, an automated
+          workflow, an AI agent, a bulk action, or the API. The richest of the three
+          events and the source of every decision-grain metric in this project.
+
+          This event commonly is not routed by an initial ingestion setup. Everything
+          downstream is built to tolerate this table being empty or absent, so the
+          modelling work does not have to wait on the ingestion change. Set
+          `cinder_source_mode_by_event: {decision_created: 'seed'}` to model it from
+          synthetic data in the meantime.
+        columns:
+          - name: EVENT
+            description: Always `decision.created`.
+            tests:
+              - not_null
+          - name: PAYLOAD
+            description: >
+              Full payload object. Contains nested arrays for policies, enforcement
+              actions, classifier predictions and point updates, plus optional
+              `resolution` (multi-review), `appeals_resolved` (appeals) and a recursive
+              `previous_decision` chain (overrides).
+            tests:
+              - not_null
+          - name: IMPORT_TS
+            description: Ingestion wall-clock time. Not event time.

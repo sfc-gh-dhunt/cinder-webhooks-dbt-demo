@@ -1,0 +1,38 @@
+# =====================================================================================
+# profiles.yml — Snowflake-native form
+# =====================================================================================
+# This file MUST live inside the project directory, alongside dbt_project.yml. It is
+# bundled into the deployed project by `snow dbt deploy`. It is NOT read from ~/.dbt/.
+#
+# There are deliberately NO authentication fields here — no password, no authenticator,
+# no private_key_path, no token. When the project runs inside Snowflake, authentication
+# is the Snowflake session's, not dbt's. Including credentials here would at best be
+# ignored and at worst leak a secret into a version-controlled file.
+#
+# There are also no env_var() calls. Snowflake-native dbt does not support env_var().
+#
+# The account field is intentionally omitted for the same reason: the deployed project
+# runs inside the account it was deployed to.
+# =====================================================================================
+
+cinder_webhooks:
+  target: dev
+  outputs:
+
+    # Used when the project runs inside Snowflake as a deployed project object, and for
+    # local development against the same objects.
+    dev:
+      type: snowflake
+      database: CINDER_ANALYTICS
+      schema: PUBLIC          # every model sets its own schema explicitly; see dbt_project.yml
+      warehouse: CINDER_DEMO_WH
+      threads: 8
+
+    # Used by CI. Identical apart from the schema, which the CI workflow overrides so
+    # each pull request builds into its own throwaway namespace.
+    ci:
+      type: snowflake
+      database: CINDER_ANALYTICS
+      schema: PUBLIC
+      warehouse: CINDER_DEMO_WH
+      threads: 8

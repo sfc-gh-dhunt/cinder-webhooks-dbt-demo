@@ -1,0 +1,122 @@
+# =====================================================================================
+# Cinder webhooks — dbt project
+# =====================================================================================
+# Deployed as a native Snowflake DBT PROJECT object via `snow dbt deploy`.
+#
+# NOTE ON CONFIGURATION: this project uses dbt `vars`, never `env_var()`.
+# Snowflake-native dbt does not support `env_var()` — a project using it will fail to
+# deploy. Every configurable value below is a var with a plain-string default, so the
+# project runs with no configuration at all and can be redirected at runtime.
+#
+# Override vars at runtime:
+#
+#   CLI:  snow dbt execute CINDER_WEBHOOKS run \
+#           --vars '{"cinder_source_mode": "raw", "raw_database": "MY_RAW_DB"}'
+#
+#   SQL:  EXECUTE DBT PROJECT CINDER_ANALYTICS.DBT.CINDER_WEBHOOKS
+#           ARGS = 'run --vars ''{"cinder_source_mode": "raw", "raw_database": "MY_RAW_DB"}''';
+# =====================================================================================
+
+name: 'cinder_webhooks'
+version: '1.0.0'
+config-version: 2
+
+profile: 'cinder_webhooks'
+
+model-paths: ['models']
+seed-paths: ['seeds']
+macro-paths: ['macros']
+test-paths: ['tests']
+analysis-paths: ['analyses']
+
+target-path: 'target'
+clean-targets:
+  - 'target'
+  - 'dbt_packages'
+
+require-dbt-version: ['>=1.8.0', '<2.0.0']
+
+# -------------------------------------------------------------------------------------
+# Variables
+# -------------------------------------------------------------------------------------
+vars:
+  # ---- Where does the raw data live? ------------------------------------------------
+  # Point these at your own landing zone. They only matter when a model is reading from
+  # the raw source rather than from seeds.
+  raw_database: 'CINDER_RAW'
+  raw_schema: 'OPENFLOW_CINDER'
+
+  # ---- Seeds or raw? ---------------------------------------------------------------
+  # 'seed'  — read the synthetic seeds only. Default, so a fresh clone runs with no
+  #           data and no ingestion pipeline.
+  # 'raw'   — read the landing tables only. What you would use in production.
+  # 'union' — read both. Useful while migrating, or for a workshop where you want the
+  #           synthetic edge cases alongside real traffic.
+  cinder_source_mode: 'seed'
+
+  # Per-event override, for the common real-world case where some events are already
+  # being ingested and others are not yet routed. Keys are the source table names,
+  # lowercased. Example:
+  #
+  #   cinder_source_mode_by_event:
+  #     job_actioned: 'raw'
+  #     job_closed: 'raw'
+  #     decision_created: 'seed'
+  #
+  # Anything not listed falls back to cinder_source_mode above.
+  cinder_source_mode_by_event: {}
+
+  # ---- Data quality bounds ---------------------------------------------------------
+  # Events older than this are treated as implausible by the freshness sanity test.
+  # Widen it if you are loading a historical backfill.
+  cinder_min_plausible_event_date: '2020-01-01'
+
+  # Tolerance for clock skew when asserting that no event is timestamped in the future.
+  cinder_future_event_tolerance_hours: 1
+
+# -------------------------------------------------------------------------------------
+# Models
+# -------------------------------------------------------------------------------------
+# Schemas are set explicitly per layer and resolved verbatim by the generate_schema_name
+# macro override — so you get CINDER_ANALYTICS.STAGING, not CINDER_ANALYTICS.PUBLIC_STAGING.
+models:
+  cinder_webhooks:
+    +persist_docs:
+      relation: true
+      columns: true
+
+    staging:
+      +schema: 'STAGING'
+      +materialized: view
+      # The base layer is ephemeral: it exists to resolve seeds-versus-raw and to
+      # deduplicate. There is no reason to persist it, and keeping it ephemeral means
+      # the staging views read as a single query.
+      base:
+        +materialized: ephemeral
+
+    intermediate:
+      +schema: 'INTERMEDIATE'
+      +materialized: ephemeral
+
+    marts:
+      +schema: 'MARTS'
+      +materialized: table
+
+    semantic:
+      +schema: 'SEMANTIC'
+
+seeds:
+  cinder_webhooks:
+    +schema: 'SEEDS'
+    cinder:
+      # The payload column holds a JSON document. Load it as a string and PARSE_JSON it
+      # in the base layer — a seed cannot carry a VARIANT directly.
+      +column_types:
+        event: VARCHAR
+        payload: VARCHAR
+        import_ts: TIMESTAMP_NTZ
+
+tests:
+  cinder_webhooks:
+    +store_failures: true
+    +schema: 'STAGING'
