@@ -71,7 +71,7 @@ with from_decisions as (
     select
           trigger_entity_schema  as entity_schema
         , trigger_entity_id      as entity_id
-        , cast(null as variant)  as entity_attributes
+        , null::variant          as entity_attributes
         , actioned_at            as observed_at
         , 'workflow_trigger'     as entity_role
     from {{ ref('stg_cinder__job_actions') }}
@@ -115,7 +115,7 @@ latest_attributes as (
 )
 
 select
-      {{ dbt_utils.generate_surrogate_key(['a.entity_schema', 'a.entity_id']) }}
+      {{ cinder_surrogate_key(['a.entity_schema', 'a.entity_id']) }}
                                                             as entity_key
     , a.entity_schema
     , a.entity_id

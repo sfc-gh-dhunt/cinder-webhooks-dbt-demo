@@ -1,3 +1,19 @@
+-- depends_on: {{ ref('stg_cinder__decisions') }}
+--
+-- The ref above is declared explicitly because the only other reference to this model is
+-- inside the is_incremental() conditional below. dbt builds its dependency graph by statically
+-- scanning for ref() calls, and a ref appearing solely inside a conditional is invisible on a
+-- first, non-incremental run — so dbt would schedule this model before its parent exists.
+--
+-- Worth knowing: a local `dbt build` does not necessarily surface this, because the graph gets
+-- resolved from a state where the parent already exists. Snowflake's dbt rejects it at deploy
+-- time. That asymmetry makes it exactly the kind of defect that passes locally and fails in
+-- production.
+--
+-- Note also that this explanation avoids writing the Jinja conditional delimiters literally.
+-- Jinja renders before SQL comments mean anything, so a tag inside a comment is still parsed
+-- as a tag — and an unclosed one here fails the whole model.
+
 {{
     config(
         materialized='incremental',
@@ -36,14 +52,14 @@ with decision_policies as (
 
     {% if is_incremental() %}
     where decision_sk in (
-        select decision_sk
-        from {{ ref('stg_cinder__decisions') }}
-        where first_seen_at >= (
+        select d.decision_sk
+        from {{ ref('stg_cinder__decisions') }} d
+        where d.first_seen_at >= (
             select coalesce(
-                       dateadd('hour', -3, max(f.decided_at)),
+                       dateadd('hour', -3, max(existing.decided_at)),
                        '1900-01-01'::timestamp_ntz
                    )::timestamp_ntz
-            from {{ this }} f
+            from {{ this }} existing
         )
     )
     {% endif %}

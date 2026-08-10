@@ -91,3 +91,26 @@
         , {{ job_object }}:category::varchar
     )
 {%- endmacro %}
+
+
+{#-
+    ==================================================================================
+    cinder_surrogate_key
+    ==================================================================================
+    Thin wrapper over dbt_utils.generate_surrogate_key.
+
+    Two reasons it is worth the indirection:
+
+      1. One place to change. If this project ever drops dbt_utils, or the hashing needs to
+         change for a compliance reason, it changes here rather than in a dozen models.
+
+      2. Linting. A namespaced macro call (`dbt_utils.generate_surrogate_key`) cannot be
+         stubbed by sqlfluff's jinja templater, which only resolves flat names. Wrapping it
+         means the project can be linted with no database connection at all — see .sqlfluff.
+
+    Takes a list of column expressions, exactly like the macro it wraps.
+-#}
+
+{% macro cinder_surrogate_key(columns) -%}
+    {{ dbt_utils.generate_surrogate_key(columns) }}
+{%- endmacro %}

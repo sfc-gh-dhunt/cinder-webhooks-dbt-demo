@@ -29,8 +29,11 @@ with job_actions as (
 
     {% if is_incremental() %}
     where first_seen_at >= (
-        select coalesce(dateadd('hour', -3, max(first_seen_at)), '1900-01-01'::timestamp_ntz)
-        from {{ this }}
+        select coalesce(
+                   dateadd('hour', -3, max(existing.first_seen_at)),
+                   '1900-01-01'::timestamp_ntz
+               )
+        from {{ this }} existing
     )
     {% endif %}
 

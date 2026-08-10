@@ -43,7 +43,7 @@ aggregated as (
 )
 
 select
-      {{ dbt_utils.generate_surrogate_key(['enforcement_action_slug']) }}
+      {{ cinder_surrogate_key(['enforcement_action_slug']) }}
                                                     as enforcement_action_key
     , enforcement_action_slug
     , initcap(replace(enforcement_action_slug, '_', ' '))

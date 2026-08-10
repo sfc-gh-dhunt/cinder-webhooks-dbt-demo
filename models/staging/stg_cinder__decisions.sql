@@ -141,7 +141,7 @@ derived as (
 )
 
 select
-      {{ dbt_utils.generate_surrogate_key(['job_closure_event_sk', 'decision_ordinal']) }}
+      {{ cinder_surrogate_key(['job_closure_event_sk', 'decision_ordinal']) }}
                                                                   as decision_sk
     , job_closure_event_sk
     , decision_ordinal

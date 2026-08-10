@@ -121,7 +121,7 @@ group_labels as (
 )
 
 select
-      {{ dbt_utils.generate_surrogate_key(['a.reviewer_email']) }}   as reviewer_key
+      {{ cinder_surrogate_key(['a.reviewer_email']) }}   as reviewer_key
     , a.reviewer_email
     , l.reviewer_name
     , coalesce(g.reviewer_group_array, array_construct())            as reviewer_group_array
@@ -144,8 +144,10 @@ select
                                                                     as is_admin
     , array_contains('QA'::variant, coalesce(g.reviewer_group_array, array_construct()))
                                                                     as is_qa
-    , array_contains('Escalation Team'::variant, coalesce(g.reviewer_group_array, array_construct()))
-                                                                    as is_escalation_team
+    , array_contains(
+          'Escalation Team'::variant,
+          coalesce(g.reviewer_group_array, array_construct())
+      )                                                             as is_escalation_team
 
     , a.observation_count
     , a.decision_observation_count

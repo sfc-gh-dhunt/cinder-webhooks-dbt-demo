@@ -104,6 +104,20 @@ CREATE ROLE IF NOT EXISTS CINDER_DBT_PROD_ROLE
 CREATE ROLE IF NOT EXISTS CINDER_DBT_CI_ROLE
     COMMENT = 'Builds the dbt project into throwaway schemas during CI';
 
+-- Roll the custom roles up to SYSADMIN.
+--
+-- NOT optional housekeeping. Objects created by a custom role are owned by that role, and a
+-- role's privileges are inherited only by roles it has been GRANTED TO. Without this, an
+-- administrator using ACCOUNTADMIN or SYSADMIN cannot even SELECT from the tables and semantic
+-- view this project creates — the error reads as a privileges bug in Snowflake and is in fact
+-- a missing grant here.
+--
+-- Rolling custom roles up to SYSADMIN is the standard Snowflake pattern for exactly this
+-- reason, and it is the kind of thing that is obvious once you have hit it and mystifying
+-- before.
+GRANT ROLE CINDER_DBT_PROD_ROLE TO ROLE SYSADMIN;
+GRANT ROLE CINDER_DBT_CI_ROLE TO ROLE SYSADMIN;
+
 GRANT USAGE ON WAREHOUSE CINDER_DEMO_WH TO ROLE CINDER_DBT_PROD_ROLE;
 GRANT USAGE ON WAREHOUSE CINDER_DEMO_WH TO ROLE CINDER_DBT_CI_ROLE;
 

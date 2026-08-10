@@ -38,8 +38,11 @@ with decisions as (
     -- The 3-hour overlap absorbs late deliveries and clock skew between the ingestion
     -- runtime and Snowflake; the merge on decision_sk makes reprocessing it idempotent.
     where first_seen_at >= (
-        select coalesce(dateadd('hour', -3, max(first_seen_at)), '1900-01-01'::timestamp_ntz)
-        from {{ this }}
+        select coalesce(
+                   dateadd('hour', -3, max(existing.first_seen_at)),
+                   '1900-01-01'::timestamp_ntz
+               )
+        from {{ this }} existing
     )
     {% endif %}
 
@@ -111,6 +114,16 @@ select
     , d.entity_id
     , d.reviewer_email
     , d.decision_ordinal
+
+    -- Staffing attribution that covers every decision, not just the human ones.
+    --
+    -- Automated decisions carry no reviewer, so joining to dim_reviewer leaves the staffing
+    -- model null — and a breakdown by staffing model then has an unlabelled bucket holding a
+    -- third of the volume. Labelling it here rather than inside dim_reviewer keeps the
+    -- dimension honest: 'Automated' is a property of the decision, not of a reviewer who does
+    -- not exist.
+    , coalesce(r.staffing_model, 'Automated')                   as staffing_model
+
     , ps.primary_policy_name
     , ps.primary_policy_group_name
 

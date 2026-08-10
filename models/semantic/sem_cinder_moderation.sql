@@ -158,8 +158,8 @@ DIMENSIONS (
         WITH SYNONYMS = ('moderator email', 'reviewer email', 'agent email')
         COMMENT = 'Moderator email — the business key, since the webhooks carry no user id',
     reviewers.staffing_model AS reviewers.staffing_model
-        WITH SYNONYMS = ('staffing', 'vendor', 'BPO', 'outsourced or in-house', 'supplier', 'team')
-        COMMENT = 'Vendor name for outsourced moderators, otherwise In-house',
+        WITH SYNONYMS = ('reviewer staffing', 'reviewer vendor', 'reviewer team')
+        COMMENT = 'Vendor name for outsourced moderators, otherwise In-house. Covers HUMAN reviewers only — for a breakdown that includes automated decisions, use decision_staffing_model instead',
     reviewers.moderator_is_outsourced AS reviewers.is_outsourced
         WITH SYNONYMS = ('outsourced', 'is BPO', 'external moderator')
         COMMENT = 'Whether the moderator belongs to an outsourced vendor team',
@@ -202,6 +202,9 @@ DIMENSIONS (
     decisions.decision_source AS decisions.decision_source_type
         WITH SYNONYMS = ('decision source', 'how it was decided', 'manual or automated', 'decision origin')
         COMMENT = 'manual means a human decided. Every other value is machine-driven',
+    decisions.decision_staffing_model AS decisions.staffing_model
+        WITH SYNONYMS = ('staffing', 'staffing model', 'vendor', 'BPO', 'outsourced or in-house', 'supplier', 'team')
+        COMMENT = 'Who handled the decision: the vendor name, In-house, or Automated. Prefer this over the reviewer staffing model, because it accounts for automated decisions instead of leaving them unlabelled',
     decisions.decision_is_automated AS decisions.is_automated
         WITH SYNONYMS = ('automated decision', 'machine decision', 'auto decided')
         COMMENT = 'Whether the decision was taken without a human',
@@ -477,10 +480,10 @@ AI_VERIFIED_QUERIES (
     ),
 
     handle_time_by_staffing_model AS (
-        QUESTION 'How does handle time compare between in-house and outsourced moderators?'
+        QUESTION 'How does handle time compare between in-house, outsourced and automated?'
         SQL 'SELECT * FROM SEMANTIC_VIEW(
                 {{ this }}
-                DIMENSIONS reviewers.staffing_model
+                DIMENSIONS decisions.decision_staffing_model
                 METRICS decisions.median_handle_time_hours, decisions.total_decisions
              ) ORDER BY median_handle_time_hours DESC'
     )

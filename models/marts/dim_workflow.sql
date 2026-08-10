@@ -61,7 +61,7 @@ latest_attributes as (
 )
 
 select
-      {{ dbt_utils.generate_surrogate_key(['a.workflow_id']) }}   as workflow_key
+      {{ cinder_surrogate_key(['a.workflow_id']) }}   as workflow_key
     , a.workflow_id
     , l.workflow_name
 

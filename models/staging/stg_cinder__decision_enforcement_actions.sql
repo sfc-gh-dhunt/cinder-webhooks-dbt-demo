@@ -70,7 +70,7 @@ exploded as (
 )
 
 select
-      {{ dbt_utils.generate_surrogate_key(['decision_sk', 'enforcement_action_slug', 'action_ordinal']) }}
+      {{ cinder_surrogate_key(['decision_sk', 'enforcement_action_slug', 'action_ordinal']) }}
                                                             as decision_enforcement_action_sk
     , decision_sk
     , job_closure_event_sk

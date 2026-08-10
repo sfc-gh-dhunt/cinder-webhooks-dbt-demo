@@ -77,7 +77,7 @@ latest_attributes as (
 )
 
 select
-      {{ dbt_utils.generate_surrogate_key(['a.queue_slug']) }}  as queue_key
+      {{ cinder_surrogate_key(['a.queue_slug']) }}  as queue_key
     , a.queue_slug
     , l.queue_is_multi_review
 

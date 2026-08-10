@@ -1,0 +1,146 @@
+# =====================================================================================
+# Deploy via workload identity federation (OIDC) — NOT ACTIVE
+# =====================================================================================
+# This file has a .example extension on purpose, so GitHub does not run it. It is the
+# recommended production alternative to the key-pair authentication in deploy.yml.
+#
+# WHY THIS IS BETTER THAN A KEY PAIR
+# ----------------------------------
+# deploy.yml holds an RSA private key in a GitHub secret. That key is long-lived, has to be
+# rotated by someone remembering to rotate it, and is readable by anything that can run a
+# workflow in the repository.
+#
+# Workload identity federation removes the secret entirely. GitHub mints a short-lived OIDC
+# token for each run, Snowflake validates it against a service user configured to trust that
+# specific repository, and nothing durable is ever stored. Rotation stops being a task.
+#
+# The trade-off, stated plainly: it needs Snowflake-side configuration before the first run,
+# so it is more setup than pasting a key into a secret. That is why key pair is the active
+# default in this repo and this is the documented upgrade.
+#
+# TO ADOPT IT
+# -----------
+#   1. Run the Snowflake setup below, once.
+#   2. Rename this file to deploy.yml, replacing the key-pair version.
+#   3. Delete the SNOWFLAKE_PRIVATE_KEY secret. Leaving it behind defeats the point.
+#
+# -------------------------------------------------------------------------------------
+# Snowflake setup — run once, as ACCOUNTADMIN
+# -------------------------------------------------------------------------------------
+# Replace <your-org>/<your-repo> with the repository that will deploy.
+#
+#   CREATE USER IF NOT EXISTS CINDER_DEPLOY_SVC
+#       TYPE = SERVICE
+#       DEFAULT_ROLE = CINDER_DBT_PROD_ROLE
+#       DEFAULT_WAREHOUSE = CINDER_DEMO_WH
+#       COMMENT = 'Deploys the Cinder webhooks dbt project from CI. No password, no key.';
+#
+#   GRANT ROLE CINDER_DBT_PROD_ROLE TO USER CINDER_DEPLOY_SVC;
+#
+#   -- Trust GitHub's OIDC issuer, scoped to one repository. The subject claim is what binds
+#   -- the trust to your repo specifically — without it, any GitHub repository could present a
+#   -- valid token.
+#   ALTER USER CINDER_DEPLOY_SVC SET
+#       WORKLOAD_IDENTITY = (
+#           TYPE = OIDC
+#           ISSUER = 'https://token.actions.githubusercontent.com'
+#           SUBJECT = 'repo:<your-org>/<your-repo>:ref:refs/heads/main'
+#       );
+#
+#   -- Restrict authentication to workload identity only, so the account cannot fall back to
+#   -- a password if one is ever set on it.
+#   CREATE AUTHENTICATION POLICY IF NOT EXISTS CINDER_ANALYTICS.ADMIN.CI_WORKLOAD_ONLY
+#       AUTHENTICATION_METHODS = ('WORKLOAD_IDENTITY')
+#       COMMENT = 'CI service users authenticate by workload identity and nothing else';
+#
+#   ALTER USER CINDER_DEPLOY_SVC
+#       SET AUTHENTICATION POLICY CINDER_ANALYTICS.ADMIN.CI_WORKLOAD_ONLY;
+#
+# Note the SUBJECT is pinned to refs/heads/main. A pull request from a fork presents a
+# different subject and cannot authenticate — which is the desired behaviour for a workflow
+# that deploys to production.
+# =====================================================================================
+
+name: Deploy (OIDC)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  # The whole mechanism. Without id-token: write, GitHub will not mint an OIDC token and the
+  # authentication step fails with a confusingly generic error.
+  id-token: write
+  contents: read
+
+env:
+  SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+  SNOWFLAKE_USER: CINDER_DEPLOY_SVC
+  SNOWFLAKE_ROLE: CINDER_DBT_PROD_ROLE
+  SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+  SNOWFLAKE_DATABASE: CINDER_ANALYTICS
+  DBT_PROJECT_NAME: CINDER_WEBHOOKS
+
+jobs:
+  deploy:
+    name: Deploy project object
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install Snowflake CLI
+        run: pip install --quiet snowflake-cli
+
+      - name: Configure Snowflake connection
+        # No secret, no key file. The audience must match what the Snowflake side expects; the
+        # CLI exchanges the GitHub-minted token for a Snowflake session itself.
+        run: |
+          mkdir -p ~/.snowflake
+          chmod 700 ~/.snowflake
+          cat > ~/.snowflake/connections.toml <<CONNTOML
+          [prod]
+          account = "$SNOWFLAKE_ACCOUNT"
+          user = "$SNOWFLAKE_USER"
+          role = "$SNOWFLAKE_ROLE"
+          warehouse = "$SNOWFLAKE_WAREHOUSE"
+          database = "$SNOWFLAKE_DATABASE"
+          authenticator = "WORKLOAD_IDENTITY"
+          workload_identity_provider = "OIDC"
+          CONNTOML
+          chmod 600 ~/.snowflake/connections.toml
+
+      - name: Verify authentication
+        # Fail here, with a clear message, rather than three steps later inside a deploy.
+        # Federation problems are configuration problems and the error surfaces are poor.
+        run: snow sql -c prod -q "SELECT CURRENT_USER(), CURRENT_ROLE();"
+
+      - name: Remove local dbt artifacts before deploying
+        run: rm -rf dbt_packages package-lock.yml target logs
+
+      - name: Deploy
+        run: |
+          snow dbt deploy "$DBT_PROJECT_NAME" \
+            --connection prod \
+            --source . \
+            --database "$SNOWFLAKE_DATABASE" \
+            --schema DBT \
+            --external-access-integration CINDER_DEMO_DBT_EAI
+
+      - name: Show versions
+        run: snow sql -c prod -q "SHOW VERSIONS IN DBT PROJECT ${SNOWFLAKE_DATABASE}.DBT.${DBT_PROJECT_NAME};"
+
+      - name: Reapply column tags
+        # Masking policies are attached by tag, and a dbt rebuild drops column tags. An
+        # untagged column is an unmasked column. See deploy.yml for the longer explanation.
+        run: snow sql -c prod -f setup/03_governance.sql

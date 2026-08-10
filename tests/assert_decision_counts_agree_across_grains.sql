@@ -36,4 +36,5 @@ cross join allocated_total a
 -- Floating-point allocation cannot be compared exactly: a decision split three ways gives
 -- three values of 0.333... that do not sum to precisely 1. The tolerance is scaled to the
 -- row count rather than fixed, so it stays meaningful as the data grows.
-where abs(d.expected_decisions - a.allocated_decisions) > greatest(0.01, d.expected_decisions * 0.0001)
+where abs(d.expected_decisions - a.allocated_decisions)
+    > greatest(0.01, d.expected_decisions * 0.0001)

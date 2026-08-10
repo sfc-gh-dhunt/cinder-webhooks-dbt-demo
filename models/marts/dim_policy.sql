@@ -92,7 +92,7 @@ parent_names as (
 )
 
 select
-      {{ dbt_utils.generate_surrogate_key(['a.policy_id']) }}        as policy_key
+      {{ cinder_surrogate_key(['a.policy_id']) }}        as policy_key
     , a.policy_id
     , l.policy_name
     , l.policy_customer_ref
@@ -133,9 +133,9 @@ select
     -- ---- Enforcement configured on the policy --------------------------------------
     -- The actions this policy calls for, as at its latest application. Distinct from what
     -- was actually applied on any given decision.
-    , coalesce(l.policy_enforcement_actions, array_construct())      as policy_enforcement_actions
+    , coalesce(l.policy_enforcement_actions, array_construct())     as policy_enforcement_actions
     , array_size(coalesce(l.policy_enforcement_actions, array_construct()))
-                                                                    as policy_enforcement_action_count
+                                                                    as policy_action_count
 
     , a.application_count
     , a.first_seen_at

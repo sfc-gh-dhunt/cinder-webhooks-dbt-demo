@@ -1,0 +1,208 @@
+version: 2
+
+# =====================================================================================
+# Unit tests
+# =====================================================================================
+# Data tests check the data you happen to have. Unit tests check the LOGIC against input you
+# control — including input you do not have and hope never to receive.
+#
+# WHY THESE TARGET fct_jobs AND NOT THE STAGING MODELS.
+#
+# The obvious place to want unit tests is the VARIANT unpacking in staging, since that is where
+# the fiddly work happens. It does not work: dbt renders fixture values as SQL literals, so a
+# JSON payload arrives as VARCHAR and every `payload:key` extraction fails on it. There is no
+# clean way to supply a VARIANT fixture.
+#
+# So the VARIANT unpacking is covered by data tests instead — `not_null` on the flattened
+# columns, `accepted_values` on the enums, plus the deliberate edge cases built into the seeds
+# (absent entity objects, categories outside the documented enum, duplicate deliveries).
+#
+# fct_jobs is the better unit-test target regardless. Its inputs are all flat columns, and it
+# holds the most consequential derived logic in the project: the lifecycle counting and status
+# derivation that no single event can be checked against, and where an error would be invisible
+# because every output would still look plausible.
+
+unit_tests:
+
+  # -----------------------------------------------------------------------------------
+  - name: test_fct_jobs_open_job_with_no_closure
+    description: >
+      A job with action history and no closure event must appear as open, count its queue
+      changes correctly, and leave every closure-dependent duration null rather than zero.
+
+      Null versus zero is the point. A zero time-to-close on an unresolved job would read as
+      instant resolution and drag the median down — a metric that gets better the more work
+      goes unfinished.
+    model: fct_jobs
+    given:
+      - input: ref('stg_cinder__job_actions')
+        rows:
+          - job_id: 'job-open'
+            action: 'created'
+            action_source: 'manual'
+            actor_type: 'user'
+            actioned_at: '2026-07-01 09:00:00+00:00'
+            queue_slug: 'flagged-text'
+            job_status_after: 'open'
+            job_category: 'standard'
+            job_created_at: '2026-07-01 08:00:00+00:00'
+            job_num_reports: 1
+            job_priority: 0
+            entity_schema: 'text_post'
+            entity_id: 'ent-open'
+            actor_user_email: 'a@example.com'
+          - job_id: 'job-open'
+            action: 'changed_queue'
+            action_source: 'manual'
+            actor_type: 'user'
+            actioned_at: '2026-07-01 10:00:00+00:00'
+            queue_slug: 'escalations'
+            job_status_after: 'open'
+            job_category: 'standard'
+            job_created_at: '2026-07-01 08:00:00+00:00'
+            job_num_reports: 1
+            job_priority: 0
+            entity_schema: 'text_post'
+            entity_id: 'ent-open'
+            actor_user_email: 'a@example.com'
+          - job_id: 'job-open'
+            action: 'changed_queue'
+            action_source: 'workflow'
+            actor_type: 'workflow'
+            actioned_at: '2026-07-01 11:00:00+00:00'
+            queue_slug: 'high-harm-review'
+            job_status_after: 'open'
+            job_category: 'standard'
+            job_created_at: '2026-07-01 08:00:00+00:00'
+            job_num_reports: 1
+            job_priority: 0
+            entity_schema: 'text_post'
+            entity_id: 'ent-open'
+            actor_user_email: null
+      - input: ref('stg_cinder__job_closures')
+        rows: []
+      - input: ref('fct_decisions')
+        rows: []
+      # The dimensions are supplied empty. fct_jobs LEFT joins to them, so an empty dimension
+      # yields null surrogate keys and leaves every measure under test unaffected — which is
+      # itself worth asserting, since an inner join here would silently drop the fact rows.
+      # dbt requires every ref() in the model to be given an input, even an unused one.
+      - input: ref('dim_queue')
+        rows: []
+      - input: ref('dim_entity')
+        rows: []
+      - input: ref('dim_reviewer')
+        rows: []
+    expect:
+      rows:
+        - job_id: 'job-open'
+          is_closed: false
+          is_open: true
+          # Two changed_queue actions out of three total.
+          action_count: 3
+          queue_change_count: 2
+          was_moved_between_queues: true
+          # From the LATEST action, not the first: job actions record movements, not state.
+          current_queue_slug: 'high-harm-review'
+          job_status: 'open'
+          # One of the three actions was taken by a workflow.
+          workflow_action_count: 1
+          human_action_count: 2
+          # No closure, so nothing derived from it. Null, never zero.
+          closed_at: null
+          time_to_close_seconds: null
+          decision_count: 0
+          has_action_history: true
+          missing_action_history: false
+
+  # -----------------------------------------------------------------------------------
+  - name: test_fct_jobs_closed_job_durations
+    description: >
+      A closed job must compute all four durations from the right pair of timestamps.
+
+      They are easy to conflate and the mistakes are silent. Queue wait is creation to first
+      action. Handle time is creation to decision. Time to close is creation to closure.
+      Post-decision lag is decision to closure — the one that reveals jobs sitting open after
+      the call has already been made, which is a different operational problem from slow review
+      and is invisible if you only measure time to close.
+    model: fct_jobs
+    given:
+      - input: ref('stg_cinder__job_actions')
+        rows:
+          - job_id: 'job-closed'
+            action: 'created'
+            action_source: 'manual'
+            actor_type: 'user'
+            # One hour after creation.
+            actioned_at: '2026-07-05 09:00:00+00:00'
+            queue_slug: 'user-reports'
+            job_status_after: 'open'
+            job_category: 'appeal'
+            job_created_at: '2026-07-05 08:00:00+00:00'
+            job_num_reports: 3
+            job_priority: 1
+            entity_schema: 'user'
+            entity_id: 'ent-closed'
+            actor_user_email: 'b@example.com'
+      - input: ref('stg_cinder__job_closures')
+        rows:
+          - job_closure_event_sk: 'c-closed'
+            job_id: 'job-closed'
+            # Six hours after creation.
+            closed_at: '2026-07-05 14:00:00+00:00'
+            job_created_at: '2026-07-05 08:00:00+00:00'
+            job_category: 'appeal'
+            queue_slug: 'user-reports'
+            queue_is_multi_review: false
+            entity_schema: 'user'
+            entity_id: 'ent-closed'
+      - input: ref('fct_decisions')
+        rows:
+          - job_id: 'job-closed'
+            # Five hours after creation, one hour before closure.
+            decided_at: '2026-07-05 13:00:00+00:00'
+            handle_time_seconds: 18000
+            is_automated: true
+            is_human_decision: false
+            is_final_decision: true
+            reviewer_email: null
+            decision_source_type: 'automated'
+            primary_policy_group_name: 'Platform Integrity'
+            enforcement_action_count: 1
+            max_enforcement_severity_rank: 4
+            is_violating_outcome: true
+            is_illegal_outcome: false
+            is_cleared_outcome: false
+      # The dimensions are supplied empty. fct_jobs LEFT joins to them, so an empty dimension
+      # yields null surrogate keys and leaves every measure under test unaffected — which is
+      # itself worth asserting, since an inner join here would silently drop the fact rows.
+      # dbt requires every ref() in the model to be given an input, even an unused one.
+      - input: ref('dim_queue')
+        rows: []
+      - input: ref('dim_entity')
+        rows: []
+      - input: ref('dim_reviewer')
+        rows: []
+    expect:
+      rows:
+        - job_id: 'job-closed'
+          is_closed: true
+          is_open: false
+          job_status: 'closed'
+          # 08:00 to 14:00.
+          time_to_close_seconds: 21600
+          # 08:00 to 09:00 — waiting in the queue, not being worked on.
+          time_to_first_action_seconds: 3600
+          # 08:00 to 13:00, carried from the decision.
+          handle_time_seconds: 18000
+          # 13:00 to 14:00 — decided, then sat open.
+          decision_to_close_seconds: 3600
+          # Open-job age applies only to open jobs.
+          open_age_at_last_action_secs: null
+          decision_count: 1
+          automated_decision_count: 1
+          human_decision_count: 0
+          closed_by_automated_decision: true
+          had_violating_outcome: true
+          queue_change_count: 0
+          was_moved_between_queues: false

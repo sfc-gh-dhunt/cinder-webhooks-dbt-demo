@@ -55,10 +55,20 @@ decisions as (
 -- Every job referenced by either event.
 job_universe as (
 
-    select job_id from actions where job_id is not null
-    union                                   -- UNION, not UNION ALL: this is a key list and
-    select job_id from closures where job_id is not null  -- duplicates are the whole point
-                                                          -- to remove.
+    -- UNION DISTINCT, not UNION ALL. This is a key list, so collapsing duplicates is the
+    -- entire point — a job appearing on both events must yield one row, not two. Spelled out
+    -- rather than left as a bare UNION, because a reader should not have to know which of the
+    -- two a bare UNION means.
+    select job_id
+    from actions
+    where job_id is not null
+
+    union distinct
+
+    select job_id
+    from closures
+    where job_id is not null
+
 ),
 
 action_summary as (
@@ -237,7 +247,7 @@ assembled as (
 
 select
     -- ---- Keys ---------------------------------------------------------------------
-      {{ dbt_utils.generate_surrogate_key(['s.job_id']) }}         as job_key
+      {{ cinder_surrogate_key(['s.job_id']) }}         as job_key
     , s.job_id
     , s.job_closure_event_sk
 
@@ -295,7 +305,7 @@ select
                 and s.job_created_at is not null
                 and s.last_actioned_at is not null
            then datediff('second', s.job_created_at, s.last_actioned_at) end
-                                                                  as open_job_age_at_last_action_seconds
+                                                                  as open_age_at_last_action_secs
 
     -- ---- Degenerate dimensions ----------------------------------------------------
     , s.job_category

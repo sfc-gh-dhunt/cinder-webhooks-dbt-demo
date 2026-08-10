@@ -3,6 +3,23 @@
 # =====================================================================================
 # Deployed as a native Snowflake DBT PROJECT object via `snow dbt deploy`.
 #
+# ############################################################################
+# # DO NOT "FIX" THE DEPRECATION WARNINGS. READ THIS FIRST.                  #
+# ############################################################################
+#
+# Snowflake's dbt runtime is currently **dbt 1.9.4**. A recent local dbt (1.11+) will emit
+# deprecation warnings against this project — specifically about `freshness` and
+# `loaded_at_field` belonging under `config:`, and about generic test arguments belonging
+# under `arguments:`.
+#
+# Those warnings describe syntax introduced AFTER 1.9.4. Adopting it makes the project fail
+# to deploy or parse inside Snowflake. The current syntax is correct for the runtime that
+# actually executes this project, and the warnings are the price of that.
+#
+# Revisit only once Snowflake's runtime advances. Check with:
+#     snow dbt execute CINDER_WEBHOOKS parse --database ... --schema ...
+# and read the `Running with dbt=` line.
+#
 # NOTE ON CONFIGURATION: this project uses dbt `vars`, never `env_var()`.
 # Snowflake-native dbt does not support `env_var()` — a project using it will fail to
 # deploy. Every configurable value below is a var with a plain-string default, so the
