@@ -65,15 +65,36 @@ DROP SNOWFLAKE.DATA_PRIVACY.CLASSIFICATION_PROFILE IF EXISTS
 DROP DBT PROJECT IF EXISTS CINDER_ANALYTICS.DBT.CINDER_WEBHOOKS;
 
 -- -------------------------------------------------------------------------------------
+-- The external access integration, BEFORE the database that holds its network rule
+-- -------------------------------------------------------------------------------------
+-- Same dependency-ordering trap as the policies above, one level up. The EAI references
+-- CINDER_ANALYTICS.ADMIN.DBT_PACKAGE_HUB_RULE, so dropping the database first leaves an
+-- integration pointing at a rule that no longer exists.
+DROP EXTERNAL ACCESS INTEGRATION IF EXISTS CINDER_DEMO_DBT_EAI;
+
+-- -------------------------------------------------------------------------------------
 -- Databases
 -- -------------------------------------------------------------------------------------
 DROP DATABASE IF EXISTS CINDER_ANALYTICS;
 DROP DATABASE IF EXISTS CINDER_RAW;
 
 -- -------------------------------------------------------------------------------------
--- Account-level objects
+-- CI/CD identity and network access, from 04_ci_access.sql
 -- -------------------------------------------------------------------------------------
-DROP EXTERNAL ACCESS INTEGRATION IF EXISTS CINDER_DEMO_DBT_EAI;
+-- USERS OUTLIVE DATABASES, which is easy to forget because everything else here is named
+-- CINDER_ and goes with the database. A service user left behind still holds a keypair and
+-- still carries a user-level network policy override. Worse, re-running 04 afterwards hits
+-- CREATE USER IF NOT EXISTS, silently keeping the OLD key while appearing to succeed.
+--
+-- The network policy must go AFTER the users, because it cannot be dropped while still
+-- attached to one.
+DROP USER IF EXISTS CINDER_CI_SVC;
+DROP USER IF EXISTS CINDER_DEPLOY_SVC;
+DROP NETWORK POLICY IF EXISTS CINDER_CI_GITHUB_ACTIONS_POLICY;
+
+-- -------------------------------------------------------------------------------------
+-- Remaining account-level objects
+-- -------------------------------------------------------------------------------------
 DROP NOTIFICATION INTEGRATION IF EXISTS CINDER_DEMO_ALERTS;
 DROP WAREHOUSE IF EXISTS CINDER_DEMO_WH;
 
@@ -88,3 +109,5 @@ DROP ROLE IF EXISTS CINDER_ANALYST_NO_PII;
 SHOW DATABASES LIKE 'CINDER_%';
 SHOW WAREHOUSES LIKE 'CINDER_%';
 SHOW ROLES LIKE 'CINDER_%';
+SHOW USERS LIKE 'CINDER%SVC';
+SHOW NETWORK POLICIES LIKE 'CINDER_%';

@@ -26,6 +26,9 @@
 --   * APPLY on the tag — granted to the deploy role in 03_governance.sql
 -- No ACCOUNTADMIN. Run this as the role that builds the models.
 --
+-- RUN ORDER: after 03 (the tag and policies must exist) and after a SUCCESSFUL BUILD (the
+-- tables must exist). Then after every build thereafter.
+--
 -- IDEMPOTENT. Setting a tag that is already set to the same value is a no-op, so this is
 -- safe to run after every build whether anything was rebuilt or not.
 --

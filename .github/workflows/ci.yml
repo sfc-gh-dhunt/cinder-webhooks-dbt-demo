@@ -37,6 +37,11 @@ env:
   SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_CI_ROLE }}
   SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
   SNOWFLAKE_DATABASE: CINDER_ANALYTICS
+  # The external access integration that lets the deployed project resolve dbt packages.
+  # A repository variable rather than a literal: rename the EAI in setup/01 and CI would
+  # otherwise keep asking for the old name, while `make deploy` — which reads it from the
+  # Makefile — carried on working. Falls back to the default so a fresh fork needs no setup.
+  SNOWFLAKE_EAI: ${{ vars.SNOWFLAKE_EAI || 'CINDER_DEMO_DBT_EAI' }}
   # A per-PR project object, so CI never touches the production one.
   DBT_PROJECT_NAME: CINDER_WEBHOOKS_CI_PR${{ github.event.pull_request.number || 0 }}
   CI_SCHEMA_PREFIX: PR${{ github.event.pull_request.number || 0 }}_
@@ -184,7 +189,7 @@ jobs:
             --source . \
             --database "$SNOWFLAKE_DATABASE" \
             --schema DBT \
-            --external-access-integration CINDER_DEMO_DBT_EAI
+            --external-access-integration "$SNOWFLAKE_EAI"
 
       - name: Build and test
         # `build`, not `run` then `test`: build interleaves each model with its own tests in

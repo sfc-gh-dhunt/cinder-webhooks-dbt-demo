@@ -1,6 +1,11 @@
 -- =====================================================================================
 -- 03 — Governance: classification and PII masking
 -- =====================================================================================
+-- RUN ORDER: after 01 (roles and database) and 02 (the landing tables this attaches a policy
+-- to). Runs BEFORE the first build — it creates the tag and the policies but deliberately
+-- does not tag any mart column, because the marts do not exist yet. Column tagging is
+-- 05_apply_column_tags.sql, which runs after every build.
+--
 -- Personal data in this pipeline is awkward for one specific reason, and it is worth being
 -- clear about it before any policy is written:
 --
@@ -319,15 +324,9 @@ GRANT SELECT ON FUTURE SEMANTIC VIEWS IN SCHEMA CINDER_ANALYTICS.SEMANTIC TO ROL
 -- reasonably grants the role to a parent role. The behaviour just has to be understood.
 --
 -- -------------------------------------------------------------------------------------
--- Confirm the tags landed where they should.
-SELECT
-      OBJECT_NAME
-    , COLUMN_NAME
-    , TAG_NAME
-    , TAG_VALUE
-FROM TABLE(CINDER_ANALYTICS.INFORMATION_SCHEMA.TAG_REFERENCES_ALL_COLUMNS(
-    'CINDER_ANALYTICS.MARTS.DIM_REVIEWER', 'TABLE'))
-ORDER BY COLUMN_NAME;
+-- NOT VERIFIED HERE: whether any column carries the tag. This file runs BEFORE the first
+-- dbt build, so the mart tables do not exist yet and a query against them would fail the
+-- script. Column tagging is 05_apply_column_tags.sql, which verifies its own work.
 
 -- Confirm the policies are attached to the tag and active.
 SELECT POLICY_NAME, REF_ENTITY_NAME, REF_ENTITY_DOMAIN, POLICY_STATUS

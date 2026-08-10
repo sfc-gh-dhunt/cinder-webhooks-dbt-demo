@@ -1,6 +1,14 @@
 -- =====================================================================================
--- 04 — Operations: scheduling, monitoring and alerting
+-- 06 — Operations: scheduling, monitoring and alerting
 -- =====================================================================================
+-- RUN ORDER: AFTER the first successful dbt build. This is not a preference. The data metric
+-- functions below attach to CINDER_ANALYTICS.MARTS.FCT_JOBS and FCT_DECISIONS, which dbt
+-- creates — on an empty account those ALTER TABLE statements fail, and because they sit
+-- ahead of the task and the alerts, none of the rest of this file gets created either. That
+-- failure is why this file is numbered 06 rather than 04.
+--
+-- Prerequisites: 01 (warehouse, database), 02 (landing tables), and a completed build.
+--
 -- WHERE THE LINE IS DRAWN BETWEEN dbt TESTS AND SNOWFLAKE DATA METRIC FUNCTIONS
 --
 -- Both check data. They are not alternatives, and running the same assertion on both sides

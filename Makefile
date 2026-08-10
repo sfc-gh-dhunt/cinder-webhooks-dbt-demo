@@ -46,8 +46,21 @@ help:
 # =====================================================================================
 
 .PHONY: setup
-setup: setup-account setup-raw setup-governance setup-operations ## Create every Snowflake object (run once)
-	@echo "Setup complete."
+setup: setup-account setup-raw setup-governance ## Create the objects that can exist before the first build
+	@echo "Pre-build setup complete."
+	@echo "Next: make deploy-run (or make build), then make setup-post-build."
+
+# SETUP IS TWO PHASES, AND THE SPLIT IS NOT ARBITRARY. Half of what this project creates
+# attaches to tables that dbt builds — column tags, and data metric functions on the marts.
+# Those objects cannot be created on an empty account, because the tables they reference do
+# not exist yet. A single `setup` target would fail partway through on a fresh account and
+# leave the later objects — the task, the alerts — uncreated, with no obvious cause.
+#
+# So: everything independent of the models first, then the build, then everything that
+# decorates the models.
+.PHONY: setup-post-build
+setup-post-build: apply-tags setup-operations ## Create the objects that require built tables (run after the first build)
+	@echo "Post-build setup complete."
 
 .PHONY: setup-account
 setup-account: ## Databases, schemas, warehouse, external access integration, roles
@@ -69,15 +82,15 @@ apply-tags: ## Reapply PII column tags (needed after every rebuild)
 
 .PHONY: setup-ci-access
 setup-ci-access: ## Service users, keypair auth and CI network access
-	$(SNOW) sql -f setup/04b_ci_access.sql
+	$(SNOW) sql -f setup/04_ci_access.sql
 
 .PHONY: setup-operations
 setup-operations: ## Data metric functions, scheduled task, alerts
-	$(SNOW) sql -f setup/04_operations.sql
+	$(SNOW) sql -f setup/06_operations.sql
 
 .PHONY: teardown
 teardown: ## Drop everything this project created (destructive — asks first)
-	@echo "This drops CINDER_RAW, CINDER_ANALYTICS, the warehouse, the roles and the integrations."
+	@echo "This drops CINDER_RAW, CINDER_ANALYTICS, the warehouse, the roles, the integrations, the CI service users and the CI network policy."
 	@read -p "Type the word 'destroy' to continue: " confirm && [ "$$confirm" = "destroy" ]
 	$(SNOW) sql -f setup/99_teardown.sql
 
@@ -114,6 +127,29 @@ build: ## Build and test everything locally
 .PHONY: rebuild
 rebuild: ## Full refresh. Required after changing incremental logic
 	$(DBT) build --full-refresh
+
+.PHONY: resume-operations
+resume-operations: ## Start the scheduled task and the alerts (created suspended on purpose)
+	@# Created suspended so a fresh demo account does not begin consuming credits on a schedule
+	@# the moment it is set up. Nothing in this project fires until this runs, which is also why
+	@# it is a deliberate target and not part of setup.
+	$(SNOW) sql -q "ALTER TASK CINDER_ANALYTICS.DBT.RUN_CINDER_WEBHOOKS RESUME; \
+	                ALTER ALERT CINDER_ANALYTICS.ADMIN.ALERT_INGESTION_STALLED RESUME; \
+	                ALTER ALERT CINDER_ANALYTICS.ADMIN.ALERT_DBT_BUILD_FAILED RESUME;"
+
+.PHONY: suspend-operations
+suspend-operations: ## Stop the scheduled task and the alerts
+	$(SNOW) sql -q "ALTER TASK CINDER_ANALYTICS.DBT.RUN_CINDER_WEBHOOKS SUSPEND; \
+	                ALTER ALERT CINDER_ANALYTICS.ADMIN.ALERT_INGESTION_STALLED SUSPEND; \
+	                ALTER ALERT CINDER_ANALYTICS.ADMIN.ALERT_DBT_BUILD_FAILED SUSPEND;"
+
+.PHONY: source-freshness
+source-freshness: ## Check the landing tables are still being fed (the dbt side of the freshness gate)
+	@# The other half of freshness lives in Snowflake as a FRESHNESS data metric function, set up
+	@# by setup/06_operations.sql. They answer different questions and both are wanted: this one
+	@# fails a BUILD so stale input cannot silently produce a confident-looking mart, while the
+	@# DMF runs on a schedule and alerts even when nobody is building anything.
+	DBT_PROFILES_DIR=$(DEV_PROFILES_DIR) dbt source freshness
 
 .PHONY: test
 test: ## Run tests only

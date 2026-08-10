@@ -59,19 +59,44 @@ Prerequisites: [Snowflake CLI](https://docs.snowflake.com/en/developer-guide/sno
 with a working connection, a role that can create databases and integrations, and Python 3.11+.
 
 ```bash
-# 1. Create every Snowflake object: databases, schemas, warehouse, roles,
-#    external access integration, masking policies, monitoring, schedule.
+# 1. Databases, schemas, warehouse, roles, the external access integration, the PII tag
+#    and masking policies. Everything that can exist before there is any data.
 make setup
 
-# 2. Deploy the dbt project into Snowflake and run it there.
+# 2. Deploy the dbt project into Snowflake, run it there, and reapply the PII column tags.
 make deploy-run
 
-# 3. Ask it something.
+# 3. Data metric functions, the scheduled task and the alerts. These attach to tables that
+#    step 2 creates, which is why they come after it rather than as part of step 1.
+make setup-post-build
+
+# 4. Ask it something.
 make verify-semantic-view
 ```
 
 That is the whole path from empty account to queryable semantic view. It takes a few minutes,
 almost all of it waiting on `dbt deps` inside Snowflake.
+
+**Why setup is two steps.** Half of what this project creates attaches to tables dbt builds —
+column tags, and data metric functions on the marts. Those cannot be created on an empty
+account, so a single `make setup` would fail partway through and leave the task and the alerts
+uncreated with no obvious cause. The numbering follows the same split: `setup/01`–`04` run
+before the first build, `05` and `06` after it.
+
+**The external access integration is not optional.** `make setup` creates
+`CINDER_DEMO_DBT_EAI`, allowing egress to `hub.getdbt.com` and `codeload.github.com`. Snowflake
+resolves dbt packages *itself* at deploy time — `packages.yml` pulls `dbt_utils` and
+`dbt_semantic_view` — and without the EAI attached to the project object, `snow dbt deploy`
+fails to resolve them. Every deploy path passes it: `make deploy`, both workflows, and the
+`deploy-oidc` example. If you rename it, set a `SNOWFLAKE_EAI` repository variable to match, or
+CI will keep asking for the old name while `make deploy` carries on working.
+
+Nothing runs on a schedule until you ask it to. The task and both alerts are created
+**suspended**, so a fresh account does not start consuming credits the moment it is set up:
+
+```bash
+make resume-operations   # and make suspend-operations to stop again
+```
 
 `make help` lists everything else.
 
@@ -299,13 +324,87 @@ anyone wants.
 stored key — no long-lived secret, no rotation. It is the better choice for anything permanent.
 Key pair is the active default only because it works with no identity-provider setup.
 
-### Setup
+### Setting it up in your own account
 
-Repository **variables**: `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_CI_USER`,
-`SNOWFLAKE_CI_ROLE`, `SNOWFLAKE_PROD_USER`, `SNOWFLAKE_PROD_ROLE`.
+Four steps. Nothing here is specific to a particular Snowflake account or GitHub organisation.
 
-Repository **secret**: `SNOWFLAKE_PRIVATE_KEY` — an unencrypted PKCS#8 private key whose public
-half is registered on the service users.
+**1. Generate a keypair.** Outside the repository — this must never be committed.
+
+```bash
+mkdir -p ~/.snowflake-keys && cd ~/.snowflake-keys
+openssl genrsa -out ci_key.pem 2048
+openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in ci_key.pem -out ci_key_pkcs8.pem
+openssl rsa -in ci_key_pkcs8.pem -pubout -out ci_key.pub
+chmod 600 ci_key*
+```
+
+**2. Create the service users.** Paste the public key body — the base64 between the PEM header
+and footer, newlines stripped — over the two placeholders in `setup/04_ci_access.sql`, then:
+
+```bash
+make setup-ci-access
+```
+
+That creates `CINDER_CI_SVC` (validates pull requests) and `CINDER_DEPLOY_SVC` (deploys on
+merge), each holding exactly one role. **Two users, not one, and this is the point:** a workflow
+file is just another file a contributor can edit, and pull requests run on untrusted branches.
+If validation and deployment share an identity, anyone who can open a pull request can write to
+production. Split, the worst a PR can do is churn its own throwaway schemas.
+
+It also grants network access, which is the step most accounts trip over — see below.
+
+**3. Tell GitHub about it.**
+
+```bash
+gh variable set SNOWFLAKE_ACCOUNT   --body "<your-account-identifier>"
+gh variable set SNOWFLAKE_WAREHOUSE --body "CINDER_DEMO_WH"
+gh variable set SNOWFLAKE_CI_USER   --body "CINDER_CI_SVC"
+gh variable set SNOWFLAKE_CI_ROLE   --body "CINDER_DBT_CI_ROLE"
+gh variable set SNOWFLAKE_PROD_USER --body "CINDER_DEPLOY_SVC"
+gh variable set SNOWFLAKE_PROD_ROLE --body "CINDER_DBT_PROD_ROLE"
+
+gh secret set SNOWFLAKE_PRIVATE_KEY < ~/.snowflake-keys/ci_key_pkcs8.pem
+```
+
+Set `SNOWFLAKE_EAI` too if you renamed the external access integration.
+
+**4. Create the `production` environment**, which `deploy.yml` declares so merges can be gated
+on a review:
+
+```bash
+gh api -X PUT repos/<owner>/<repo>/environments/production
+```
+
+Open a pull request and CI runs.
+
+### Network access — the step that blocks most accounts
+
+Most real accounts restrict access by IP. CI runners are ephemeral and their addresses are
+neither stable nor yours, so every pipeline fails with:
+
+```
+Incoming request with IP/Token x.x.x.x is not allowed to access Snowflake
+```
+
+**Do not widen your account-level network policy.** It usually protects every human and service
+in the account, and adding thousands of public cloud ranges removes that protection for
+everyone to unblock one pipeline.
+
+Snowflake maintains the address lists for you. `SNOWFLAKE.NETWORK_SECURITY` holds managed
+network rules for common CI and BI platforms, kept current as the providers change:
+
+```sql
+SHOW NETWORK RULES IN SCHEMA SNOWFLAKE.NETWORK_SECURITY;
+```
+
+`setup/04_ci_access.sql` builds a policy from `GITHUBACTIONS_GLOBAL` and attaches it **to the
+two service users only**. A user-level policy overrides the account-level one for that user
+alone, so humans keep whatever restriction the account imposes and the account policy is never
+touched. Substitute a different managed rule for Azure DevOps, dbt Cloud or another platform.
+
+Be clear-eyed about the trade: this admits any GitHub Actions runner, not only yours, so the key
+is what actually authenticates. Guard the secret, keep the roles narrow, and prefer workload
+identity federation — `deploy-oidc.yml.example` — for anything long-lived.
 
 ### What CI cannot do here
 
@@ -322,14 +421,17 @@ The project reads seeds by default. Switch to the real landing tables per event,
 practice some events are already being ingested while others are not yet routed:
 
 ```bash
+# Note the argument order: the CLI's own options come BEFORE the project name. Anything after
+# the `build` subcommand is forwarded verbatim to dbt.
+
 # Everything from the landing tables
-snow dbt execute CINDER_WEBHOOKS build \
-  --database CINDER_ANALYTICS --schema DBT \
+snow dbt execute --database CINDER_ANALYTICS --schema DBT \
+  CINDER_WEBHOOKS build \
   --vars '{"cinder_source_mode": "raw"}'
 
 # One event live, the other still on seeds
-snow dbt execute CINDER_WEBHOOKS build \
-  --database CINDER_ANALYTICS --schema DBT \
+snow dbt execute --database CINDER_ANALYTICS --schema DBT \
+  CINDER_WEBHOOKS build \
   --vars '{"cinder_source_mode_by_event": {"job_actioned": "raw", "job_closed": "seed"}}'
 ```
 
@@ -360,10 +462,11 @@ setup/                  Snowflake objects. Run in order; all idempotent.
   01_account_setup.sql     databases, schemas, warehouse, EAI, roles
   02_raw_tables.sql        landing tables matching the ingestion output shape
   03_governance.sql        PII tag, masking policies, classification profile
-  04b_ci_access.sql        CI service users, keypair auth, runner network access
-  05_apply_column_tags.sql Reapply PII tags — MUST run after every rebuild
-  04_operations.sql        data metric functions, scheduled task, alerts
-  99_teardown.sql          drop everything
+  04_ci_access.sql         CI service users, keypair auth, runner network access
+  --- deploy and build here: the files below attach to tables dbt creates ---
+  05_apply_column_tags.sql reapply PII tags — MUST run after every rebuild
+  06_operations.sql        data metric functions, scheduled task, alerts
+  99_teardown.sql          drop everything, including the service users
 
 seeds/
   generate_seeds.py        deterministic generator; the CSVs are committed
@@ -380,7 +483,16 @@ macros/                  source switching, dedup key, schema naming
 tests/                   business invariants a generic test cannot express
 scripts/                 the private-reference guard used by pre-commit
 .github/workflows/       CI and deployment
+.github/ci-profiles/     credential-free profile, so `dbt parse` needs no connection
+.sqlfluff-stubs/         stub ref()/source()/config(), so linting needs no warehouse
+requirements-validate.txt  lint and parse toolchain  (kept apart: dbt-snowflake and
+requirements-deploy.txt    deploy toolchain           snowflake-cli conflict on pip)
 ```
+
+The last four are worth knowing about because they are not obvious and the rest of the setup
+depends on them. Both `dbt parse` and `sqlfluff` are made to run with **no Snowflake
+credentials at all** — that is what lets CI reject a broken project in seconds without
+touching a warehouse, and it is why linting is not gated behind a working connection.
 
 ## Adapting this to your own environment
 

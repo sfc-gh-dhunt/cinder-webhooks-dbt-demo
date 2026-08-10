@@ -119,15 +119,19 @@ ALTER USER CINDER_DEPLOY_SVC SET NETWORK_POLICY = CINDER_CI_GITHUB_ACTIONS_POLIC
 --
 -- See .github/workflows/deploy-oidc.yml.example for the pipeline side.
 --
--- CREATE SECURITY INTEGRATION GITHUB_ACTIONS_OIDC
---     TYPE = WORKLOAD_IDENTITY
---     WORKLOAD_IDENTITY_PROVIDER = 'OIDC'
---     OIDC_ISSUER = 'https://token.actions.githubusercontent.com'
---     OIDC_AUDIENCE_LIST = ('snowflakecomputing.com')
---     ENABLED = TRUE;
+-- The trust is set ON THE USER — there is no separate security integration to create. The
+-- SUBJECT claim is what binds it to one repository; without it any GitHub repository in the
+-- world could present a valid token for your account.
 --
 -- ALTER USER CINDER_DEPLOY_SVC SET
---     WORKLOAD_IDENTITY_SUBJECT = 'repo:YOUR_ORG/YOUR_REPO:ref:refs/heads/main';
+--     WORKLOAD_IDENTITY = (
+--         TYPE = OIDC
+--         ISSUER = 'https://token.actions.githubusercontent.com'
+--         SUBJECT = 'repo:<your-org>/<your-repo>:ref:refs/heads/main'
+--     );
+--
+-- Then remove the key set above, so no long-lived secret remains:
+-- ALTER USER CINDER_DEPLOY_SVC UNSET RSA_PUBLIC_KEY;
 
 -- -------------------------------------------------------------------------------------
 -- Verify

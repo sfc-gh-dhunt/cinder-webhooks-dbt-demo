@@ -36,6 +36,11 @@ env:
   SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_PROD_ROLE }}
   SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
   SNOWFLAKE_DATABASE: CINDER_ANALYTICS
+  # The external access integration that lets the deployed project resolve dbt packages.
+  # A repository variable rather than a literal: rename the EAI in setup/01 and CI would
+  # otherwise keep asking for the old name, while `make deploy` — which reads it from the
+  # Makefile — carried on working. Falls back to the default so a fresh fork needs no setup.
+  SNOWFLAKE_EAI: ${{ vars.SNOWFLAKE_EAI || 'CINDER_DEMO_DBT_EAI' }}
   DBT_PROJECT_NAME: CINDER_WEBHOOKS
 
 jobs:
@@ -87,7 +92,7 @@ jobs:
             --source . \
             --database "$SNOWFLAKE_DATABASE" \
             --schema DBT \
-            --external-access-integration CINDER_DEMO_DBT_EAI
+            --external-access-integration "$SNOWFLAKE_EAI"
 
       - name: Show versions
         # Recorded in the job log so the deployed version is traceable from the commit
@@ -113,10 +118,15 @@ jobs:
       - name: Optional full build
         if: ${{ inputs.run_after_deploy }}
         run: |
-          snow dbt execute "$DBT_PROJECT_NAME" build \
+          # CLI options BEFORE the project name. Everything after the `build` subcommand is
+          # forwarded verbatim to dbt, so --connection placed there is swallowed and the CLI
+          # falls back to the default connection, reporting "Connection default is not
+          # configured" — which points nowhere near the real mistake.
+          snow dbt execute \
             --connection prod \
             --database "$SNOWFLAKE_DATABASE" \
-            --schema DBT
+            --schema DBT \
+            "$DBT_PROJECT_NAME" build
 
       - name: Remove credentials
         if: always()
