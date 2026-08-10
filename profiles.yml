@@ -13,28 +13,41 @@
 #
 # The account field is intentionally omitted for the same reason: the deployed project
 # runs inside the account it was deployed to.
+#
+# `role:` IS REQUIRED, unlike the credentials, and the interaction with CI is worth knowing
+# before it bites. `snow dbt deploy` rejects a profile without it:
+#
+#   Missing required fields: role in target default
+#
+# and it validates EVERY output against the role that is CONNECTING — not just the one in
+# use. So a role named here must be accessible to every identity that deploys this project.
+# A CI service user correctly holding only the CI role fails on an output naming production:
+#
+#   * Role 'CINDER_DBT_PROD_ROLE' does not exist or is not accessible.
+#
+# The tempting fixes are both wrong. Granting production to the CI user destroys the
+# separation the two users exist to create. Naming the CI role here means production deploys
+# as CI. Neither trade is worth making to satisfy a validator.
+#
+# So this file names the PRODUCTION role — correct for the deployed production object — and
+# the CI workflow rewrites this one line before deploying its throwaway project, so that
+# project runs as the CI role. The rewrite happens in the runner's checkout and is never
+# committed. See "Point the profile at the CI role" in .github/workflows/ci.yml.
+#
+# ONE OUTPUT, NOT ONE PER ENVIRONMENT. A second output would not help: deploy validates all
+# of them regardless of which is selected, so an unused `ci` output fails a production deploy
+# just as surely. Environment separation here is by SCHEMA, applied through the
+# cinder_schema_prefix var in macros/generate_schema_name.sql — a pull request builds into
+# PR123_MARTS while production builds into MARTS, from identical code.
 # =====================================================================================
 
 cinder_webhooks:
-  target: dev
+  target: default
   outputs:
-
-    # Used when the project runs inside Snowflake as a deployed project object, and for
-    # local development against the same objects.
-    dev:
+    default:
       type: snowflake
-      role: CINDER_DBT_PROD_ROLE
+      role: CINDER_DBT_PROD_ROLE   # rewritten by CI; see the note above
       database: CINDER_ANALYTICS
       schema: PUBLIC          # every model sets its own schema explicitly; see dbt_project.yml
-      warehouse: CINDER_DEMO_WH
-      threads: 8
-
-    # Used by CI. Identical apart from the schema, which the CI workflow overrides so
-    # each pull request builds into its own throwaway namespace.
-    ci:
-      type: snowflake
-      role: CINDER_DBT_CI_ROLE
-      database: CINDER_ANALYTICS
-      schema: PUBLIC
       warehouse: CINDER_DEMO_WH
       threads: 8

@@ -1,6 +1,7 @@
 -- =====================================================================================
 -- 02 — Raw landing tables
 -- =====================================================================================
+-- RUN ORDER: after 01_account_setup.sql (the database, schema and warehouse must exist).
 -- Creates the tables the ingestion layer writes into. In a real deployment these are
 -- created once and then owned by the ingestion tool's service user.
 --

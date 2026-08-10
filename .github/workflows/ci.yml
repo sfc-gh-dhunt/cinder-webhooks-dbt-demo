@@ -37,6 +37,11 @@ env:
   SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_CI_ROLE }}
   SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
   SNOWFLAKE_DATABASE: CINDER_ANALYTICS
+  # The external access integration that lets the deployed project resolve dbt packages.
+  # A repository variable rather than a literal: rename the EAI in setup/01 and CI would
+  # otherwise keep asking for the old name, while `make deploy` — which reads it from the
+  # Makefile — carried on working. Falls back to the default so a fresh fork needs no setup.
+  SNOWFLAKE_EAI: ${{ vars.SNOWFLAKE_EAI || 'CINDER_DEMO_DBT_EAI' }}
   # A per-PR project object, so CI never touches the production one.
   DBT_PROJECT_NAME: CINDER_WEBHOOKS_CI_PR${{ github.event.pull_request.number || 0 }}
   CI_SCHEMA_PREFIX: PR${{ github.event.pull_request.number || 0 }}_
@@ -82,6 +87,14 @@ jobs:
             git diff --stat seeds/cinder/
             exit 1
           fi
+
+      - name: Install dbt packages
+        # `dbt parse` refuses to run with packages declared but not installed, so deps has to
+        # come first even though nothing here executes SQL. This resolves from the network, not
+        # from Snowflake — which is why it belongs in the credential-free job.
+        env:
+          DBT_PROFILES_DIR: ${{ github.workspace }}/.github/ci-profiles
+        run: dbt deps
 
       - name: Parse the project
         # Structural validation with no database connection: catches broken refs, bad Jinja and
@@ -150,6 +163,18 @@ jobs:
             snow sql -c ci -q "CREATE SCHEMA IF NOT EXISTS ${SNOWFLAKE_DATABASE}.${CI_SCHEMA_PREFIX}${layer};"
           done
 
+      - name: Point the profile at the CI role
+        # profiles.yml names the production role, because that is right for the production
+        # object and the field is mandatory. `snow dbt deploy` validates it against the
+        # connecting role, so deploying as the CI user with that name in place fails.
+        #
+        # Rewritten here rather than solved by granting the CI user the production role, which
+        # would defeat the separation, or by naming the CI role in the committed file, which
+        # would make production deploy as CI. The edit exists only in this runner's checkout.
+        run: |
+          sed -i "s/^      role: .*/      role: ${SNOWFLAKE_ROLE}/" profiles.yml
+          grep -E "^      role:" profiles.yml
+
       - name: Remove local dbt artifacts before deploying
         # dbt_packages/, package-lock.yml, target/ and logs/ must not be uploaded. The lock
         # file in particular is written by whichever dbt version ran locally, and a newer
@@ -164,7 +189,7 @@ jobs:
             --source . \
             --database "$SNOWFLAKE_DATABASE" \
             --schema DBT \
-            --external-access-integration CINDER_DEMO_DBT_EAI
+            --external-access-integration "$SNOWFLAKE_EAI"
 
       - name: Build and test
         # `build`, not `run` then `test`: build interleaves each model with its own tests in
@@ -174,11 +199,21 @@ jobs:
         # --full-refresh because the PR schemas are new every time. It also sidesteps the class
         # of bug where an incremental model's logic changed but its existing rows were built by
         # the old logic and look perfectly fine.
+        #
+        # ARGUMENT ORDER IS LOAD-BEARING. Everything after the `build` subcommand is forwarded
+        # verbatim to dbt, so the CLI's own options have to come BEFORE the project name.
+        # Putting --connection after `build` hands it to dbt, which ignores it, and the CLI
+        # then falls back to the default connection and reports:
+        #
+        #   Connection default is not configured
+        #
+        # which says nothing about the real mistake.
         run: |
-          snow dbt execute "$DBT_PROJECT_NAME" build \
+          snow dbt execute \
             --connection ci \
             --database "$SNOWFLAKE_DATABASE" \
             --schema DBT \
+            "$DBT_PROJECT_NAME" build \
             --full-refresh \
             --vars "{\"cinder_schema_prefix\": \"$CI_SCHEMA_PREFIX\", \"cinder_source_mode\": \"seed\"}"
 

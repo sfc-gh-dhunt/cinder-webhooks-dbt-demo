@@ -283,6 +283,14 @@ METRICS (
         COMMENT = 'Median hours from job creation to decision. The measure meant by handle time when comparing queues and moderators',
     decisions.avg_handle_time_hours AS AVG(decisions.decision_handle_time_hours)
         WITH SYNONYMS = ('average handle time', 'mean handle time', 'average AHT'),
+    -- The tail, which is where the harm and the SLA breaches live. A median says what a
+    -- typical case looked like; it says nothing about the slowest tenth, and moderation
+    -- commitments are almost always written as a percentile rather than an average. A queue
+    -- with a comfortable median and a p90 of three days has a real backlog problem that the
+    -- median actively conceals.
+    decisions.p90_handle_time_hours AS PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY decisions.decision_handle_time_hours)
+        WITH SYNONYMS = ('p90 handle time', '90th percentile handle time', 'slowest decisions', 'tail handle time', 'worst case handle time', 'SLA handle time')
+        COMMENT = 'Hours from job creation to decision at the 90th percentile. Use with the median, not instead of it — a gap between the two is the backlog',
     decisions.automated_decisions AS SUM(IFF(decisions.is_automated, 1, 0))
         WITH SYNONYMS = ('automated decisions', 'machine decisions'),
     decisions.human_decisions AS SUM(IFF(decisions.is_human_decision, 1, 0))
@@ -422,6 +430,15 @@ AI_VERIFIED_QUERIES (
                 DIMENSIONS queues.queue_name
                 METRICS decisions.median_handle_time_hours, decisions.total_decisions
              ) ORDER BY median_handle_time_hours DESC'
+    ),
+
+    handle_time_tail_by_queue AS (
+        QUESTION 'Which queues have the worst tail latency — where is the p90 handle time far above the median?'
+        SQL 'SELECT * FROM SEMANTIC_VIEW(
+                {{ this }}
+                DIMENSIONS queues.queue_name
+                METRICS decisions.median_handle_time_hours, decisions.p90_handle_time_hours, decisions.total_decisions
+             ) ORDER BY p90_handle_time_hours DESC'
     ),
 
     handle_time_by_moderator AS (

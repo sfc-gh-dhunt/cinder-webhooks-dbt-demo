@@ -17,7 +17,7 @@
 # actually executes this project, and the warnings are the price of that.
 #
 # Revisit only once Snowflake's runtime advances. Check with:
-#     snow dbt execute CINDER_WEBHOOKS parse --database ... --schema ...
+#     snow dbt execute --database ... --schema ... CINDER_WEBHOOKS parse
 # and read the `Running with dbt=` line.
 #
 # NOTE ON CONFIGURATION: this project uses dbt `vars`, never `env_var()`.
@@ -27,8 +27,9 @@
 #
 # Override vars at runtime:
 #
-#   CLI:  snow dbt execute CINDER_WEBHOOKS run \
+#   CLI:  snow dbt execute --database ... --schema ... CINDER_WEBHOOKS run \
 #           --vars '{"cinder_source_mode": "raw", "raw_database": "MY_RAW_DB"}'
+#         (CLI options precede the project name; args after the subcommand go to dbt)
 #
 #   SQL:  EXECUTE DBT PROJECT CINDER_ANALYTICS.DBT.CINDER_WEBHOOKS
 #           ARGS = 'run --vars ''{"cinder_source_mode": "raw", "raw_database": "MY_RAW_DB"}''';

@@ -11,7 +11,12 @@ set -uo pipefail
 
 PATTERNS=(
     # Account identifiers: a real Snowflake account locator or org-account name.
-    '[a-z]{2}[0-9]{5}'
+    #
+    # ANCHORED ON WORD BOUNDARIES, which matters more than it looks. Unanchored, this matches
+    # inside hexadecimal — a UUID like 9042cc031122 contains "cc03112", so every synthetic
+    # UUID in the seeds tripped it. A locator appears as a standalone token, never embedded
+    # in a longer hex run, so the boundaries remove the false positives without weakening it.
+    '\b[A-Za-z]{2,4}[0-9]{5}\b'
     # Environment-prefixed database names of the form PROD__SOMETHING__SOMETHING.
     '(PROD|DEV|STAGING|UAT)__[A-Z_]+__[A-Z_]+'
     # Service accounts belonging to a specific deployment.
@@ -37,8 +42,14 @@ for i in "${!PATTERNS[@]}"; do
     if command -v rg >/dev/null 2>&1; then
         HITS=$(echo "$FILES" | xargs rg --pcre2 --no-heading --line-number "${PATTERNS[$i]}" 2>/dev/null || true)
     else
-        # grep -P is unavailable on macOS, so the lookahead-dependent pattern is skipped
-        # rather than silently producing a false pass.
+        # grep -P is unavailable on macOS, so a lookahead-dependent pattern is skipped rather
+        # than silently producing a false pass.
+        #
+        # BE AWARE OF WHAT THIS MEANS: a pattern skipped here still runs in CI, where ripgrep
+        # is present. A check that never executes on the maintainer's machine is a check whose
+        # first real run is on a pull request — which is exactly how this script came to have a
+        # pattern that matched every UUID in the seed data. Keep patterns POSIX-compatible
+        # where you can, so local and CI behave the same.
         if [[ "${PATTERNS[$i]}" == *'(?!'* ]]; then
             echo "note: skipping ${DESCRIPTIONS[$i]} check (needs ripgrep or grep -P)"
             continue
@@ -48,7 +59,9 @@ for i in "${!PATTERNS[@]}"; do
 
     if [ -n "$HITS" ]; then
         echo "FAIL: possible ${DESCRIPTIONS[$i]} found:"
-        echo "$HITS" | head -20
+        # No pipe into head: `set -o pipefail` plus head closing the pipe early turns a
+        # successful report into a "write error: Broken pipe" and an unhelpful exit code.
+        printf '%s\n' "$(echo "$HITS" | awk 'NR<=20')"
         echo
         FAILED=1
     fi

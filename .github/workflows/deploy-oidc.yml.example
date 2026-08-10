@@ -27,15 +27,11 @@
 # -------------------------------------------------------------------------------------
 # Snowflake setup — run once, as ACCOUNTADMIN
 # -------------------------------------------------------------------------------------
+# THE USER ALREADY EXISTS. setup/04_ci_access.sql creates CINDER_DEPLOY_SVC and grants it the
+# production role. Do not create it again here — this file only needs to REPLACE its keypair
+# authentication with workload identity. Everything below assumes 04 has run.
+#
 # Replace <your-org>/<your-repo> with the repository that will deploy.
-#
-#   CREATE USER IF NOT EXISTS CINDER_DEPLOY_SVC
-#       TYPE = SERVICE
-#       DEFAULT_ROLE = CINDER_DBT_PROD_ROLE
-#       DEFAULT_WAREHOUSE = CINDER_DEMO_WH
-#       COMMENT = 'Deploys the Cinder webhooks dbt project from CI. No password, no key.';
-#
-#   GRANT ROLE CINDER_DBT_PROD_ROLE TO USER CINDER_DEPLOY_SVC;
 #
 #   -- Trust GitHub's OIDC issuer, scoped to one repository. The subject claim is what binds
 #   -- the trust to your repo specifically — without it, any GitHub repository could present a
@@ -46,6 +42,10 @@
 #           ISSUER = 'https://token.actions.githubusercontent.com'
 #           SUBJECT = 'repo:<your-org>/<your-repo>:ref:refs/heads/main'
 #       );
+#
+#   -- Having done that, remove the key that 04_ci_access.sql set, so there is no longer a
+#   -- long-lived secret to leak. This is the entire point of the exercise.
+#   ALTER USER CINDER_DEPLOY_SVC UNSET RSA_PUBLIC_KEY;
 #
 #   -- Restrict authentication to workload identity only, so the account cannot fall back to
 #   -- a password if one is ever set on it.
@@ -80,10 +80,15 @@ permissions:
 
 env:
   SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
-  SNOWFLAKE_USER: CINDER_DEPLOY_SVC
-  SNOWFLAKE_ROLE: CINDER_DBT_PROD_ROLE
+  SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_PROD_USER }}
+  SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_PROD_ROLE }}
   SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
   SNOWFLAKE_DATABASE: CINDER_ANALYTICS
+  # The external access integration that lets the deployed project resolve dbt packages.
+  # A repository variable rather than a literal: rename the EAI in setup/01 and CI would
+  # otherwise keep asking for the old name, while `make deploy` — which reads it from the
+  # Makefile — carried on working. Falls back to the default so a fresh fork needs no setup.
+  SNOWFLAKE_EAI: ${{ vars.SNOWFLAKE_EAI || 'CINDER_DEMO_DBT_EAI' }}
   DBT_PROJECT_NAME: CINDER_WEBHOOKS
 
 jobs:
@@ -136,7 +141,7 @@ jobs:
             --source . \
             --database "$SNOWFLAKE_DATABASE" \
             --schema DBT \
-            --external-access-integration CINDER_DEMO_DBT_EAI
+            --external-access-integration "$SNOWFLAKE_EAI"
 
       - name: Show versions
         run: snow sql -c prod -q "SHOW VERSIONS IN DBT PROJECT ${SNOWFLAKE_DATABASE}.DBT.${DBT_PROJECT_NAME};"
@@ -144,4 +149,9 @@ jobs:
       - name: Reapply column tags
         # Masking policies are attached by tag, and a dbt rebuild drops column tags. An
         # untagged column is an unmasked column. See deploy.yml for the longer explanation.
-        run: snow sql -c prod -f setup/03_governance.sql
+        #
+        # 05_apply_column_tags.sql, NOT 03_governance.sql. The governance script creates roles
+        # and policy DDL and opens with USE ROLE ACCOUNTADMIN, which a correctly-scoped deploy
+        # identity does not have — so pointing this step at 03 both fails AND leaves the
+        # rebuilt tables untagged, which means unmasked.
+        run: snow sql -c prod -f setup/05_apply_column_tags.sql

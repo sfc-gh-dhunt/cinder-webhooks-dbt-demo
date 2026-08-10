@@ -17,4 +17,10 @@ dbt-snowflake~=1.11.0
 
 # sqlfluff uses the jinja templater against .sqlfluff-stubs/, so linting needs no database
 # connection and no working profile.
-sqlfluff~=3.5.0
+#
+# PIN THIS TO THE VERSION YOU LINT WITH LOCALLY. sqlfluff changes rule behaviour across major
+# versions, and .sqlfluff is tuned to a specific one — the rules excluded there are excluded
+# because of how THIS version interprets them. A mismatch produces the worst kind of CI
+# failure: hundreds of violations on a branch that is clean on your machine, in files the
+# change never touched. Check with `sqlfluff --version` before bumping.
+sqlfluff~=4.3.0
