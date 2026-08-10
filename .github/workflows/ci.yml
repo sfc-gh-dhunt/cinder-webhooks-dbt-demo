@@ -158,6 +158,18 @@ jobs:
             snow sql -c ci -q "CREATE SCHEMA IF NOT EXISTS ${SNOWFLAKE_DATABASE}.${CI_SCHEMA_PREFIX}${layer};"
           done
 
+      - name: Point the profile at the CI role
+        # profiles.yml names the production role, because that is right for the production
+        # object and the field is mandatory. `snow dbt deploy` validates it against the
+        # connecting role, so deploying as the CI user with that name in place fails.
+        #
+        # Rewritten here rather than solved by granting the CI user the production role, which
+        # would defeat the separation, or by naming the CI role in the committed file, which
+        # would make production deploy as CI. The edit exists only in this runner's checkout.
+        run: |
+          sed -i "s/^      role: .*/      role: ${SNOWFLAKE_ROLE}/" profiles.yml
+          grep -E "^      role:" profiles.yml
+
       - name: Remove local dbt artifacts before deploying
         # dbt_packages/, package-lock.yml, target/ and logs/ must not be uploaded. The lock
         # file in particular is written by whichever dbt version ran locally, and a newer
