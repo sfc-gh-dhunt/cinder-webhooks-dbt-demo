@@ -194,11 +194,21 @@ jobs:
         # --full-refresh because the PR schemas are new every time. It also sidesteps the class
         # of bug where an incremental model's logic changed but its existing rows were built by
         # the old logic and look perfectly fine.
+        #
+        # ARGUMENT ORDER IS LOAD-BEARING. Everything after the `build` subcommand is forwarded
+        # verbatim to dbt, so the CLI's own options have to come BEFORE the project name.
+        # Putting --connection after `build` hands it to dbt, which ignores it, and the CLI
+        # then falls back to the default connection and reports:
+        #
+        #   Connection default is not configured
+        #
+        # which says nothing about the real mistake.
         run: |
-          snow dbt execute "$DBT_PROJECT_NAME" build \
+          snow dbt execute \
             --connection ci \
             --database "$SNOWFLAKE_DATABASE" \
             --schema DBT \
+            "$DBT_PROJECT_NAME" build \
             --full-refresh \
             --vars "{\"cinder_schema_prefix\": \"$CI_SCHEMA_PREFIX\", \"cinder_source_mode\": \"seed\"}"
 
