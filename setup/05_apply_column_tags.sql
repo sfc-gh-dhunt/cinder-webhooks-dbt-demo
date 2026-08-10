@@ -75,14 +75,33 @@ ALTER TABLE CINDER_ANALYTICS.MARTS.FCT_JOBS
 -- Verify, rather than assume
 -- -------------------------------------------------------------------------------------
 -- Tagging succeeds silently and masking is invisible until someone queries the data as an
--- unprivileged role — so a deploy that skipped this file looks identical to one that ran
--- it. This query lists what is actually tagged. Nine rows expected.
+-- unprivileged role — so a deploy that skipped this file looks identical to one that ran it.
+-- This reads back what is actually attached.
+--
+-- SYSTEM$GET_TAG, not ACCOUNT_USAGE.TAG_REFERENCES, for two reasons. ACCOUNT_USAGE lags by
+-- up to two hours, so it cannot confirm a tag applied seconds ago — it would report the
+-- PREVIOUS state and call a broken deploy healthy. It also requires privileges on the
+-- SNOWFLAKE database that a deploy role has no other reason to hold.
+--
+-- Every column below must return its category. A NULL means the tag did not apply, which
+-- means that column is unmasked.
 SELECT
-      object_database || '.' || object_schema || '.' || object_name AS table_name
-    , column_name
-    , tag_value
-FROM SNOWFLAKE.ACCOUNT_USAGE.TAG_REFERENCES
-WHERE tag_name = 'PII_CATEGORY'
-  AND object_deleted IS NULL
-  AND column_name IS NOT NULL
-ORDER BY table_name, column_name;
+      'DIM_REVIEWER.REVIEWER_EMAIL' AS tagged_column
+    , SYSTEM$GET_TAG('CINDER_ANALYTICS.ADMIN.PII_CATEGORY', 'CINDER_ANALYTICS.MARTS.DIM_REVIEWER.REVIEWER_EMAIL', 'COLUMN') AS pii_category
+UNION ALL SELECT 'DIM_REVIEWER.REVIEWER_NAME'
+    , SYSTEM$GET_TAG('CINDER_ANALYTICS.ADMIN.PII_CATEGORY', 'CINDER_ANALYTICS.MARTS.DIM_REVIEWER.REVIEWER_NAME', 'COLUMN')
+UNION ALL SELECT 'DIM_ENTITY.ENTITY_EMAIL'
+    , SYSTEM$GET_TAG('CINDER_ANALYTICS.ADMIN.PII_CATEGORY', 'CINDER_ANALYTICS.MARTS.DIM_ENTITY.ENTITY_EMAIL', 'COLUMN')
+UNION ALL SELECT 'DIM_ENTITY.ENTITY_USERNAME'
+    , SYSTEM$GET_TAG('CINDER_ANALYTICS.ADMIN.PII_CATEGORY', 'CINDER_ANALYTICS.MARTS.DIM_ENTITY.ENTITY_USERNAME', 'COLUMN')
+UNION ALL SELECT 'DIM_ENTITY.ENTITY_CAPTION'
+    , SYSTEM$GET_TAG('CINDER_ANALYTICS.ADMIN.PII_CATEGORY', 'CINDER_ANALYTICS.MARTS.DIM_ENTITY.ENTITY_CAPTION', 'COLUMN')
+UNION ALL SELECT 'DIM_ENTITY.ENTITY_ATTRIBUTES'
+    , SYSTEM$GET_TAG('CINDER_ANALYTICS.ADMIN.PII_CATEGORY', 'CINDER_ANALYTICS.MARTS.DIM_ENTITY.ENTITY_ATTRIBUTES', 'COLUMN')
+UNION ALL SELECT 'FCT_DECISIONS.REVIEWER_EMAIL'
+    , SYSTEM$GET_TAG('CINDER_ANALYTICS.ADMIN.PII_CATEGORY', 'CINDER_ANALYTICS.MARTS.FCT_DECISIONS.REVIEWER_EMAIL', 'COLUMN')
+UNION ALL SELECT 'FCT_JOB_ACTIONS.ACTOR_USER_EMAIL'
+    , SYSTEM$GET_TAG('CINDER_ANALYTICS.ADMIN.PII_CATEGORY', 'CINDER_ANALYTICS.MARTS.FCT_JOB_ACTIONS.ACTOR_USER_EMAIL', 'COLUMN')
+UNION ALL SELECT 'FCT_JOBS.FINAL_REVIEWER_EMAIL'
+    , SYSTEM$GET_TAG('CINDER_ANALYTICS.ADMIN.PII_CATEGORY', 'CINDER_ANALYTICS.MARTS.FCT_JOBS.FINAL_REVIEWER_EMAIL', 'COLUMN')
+;

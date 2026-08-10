@@ -212,7 +212,15 @@ ALTER TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY SET
 --
 -- The deploy role needs APPLY on the tag to do that job. This is the one grant that makes
 -- the split possible, and it is far narrower than the alternative.
+-- USAGE on this schema is needed too, and its absence is easy to misread: the error names
+-- the SCHEMA, not the tag —
+--   "Schema 'CINDER_ANALYTICS.ADMIN' does not exist or not authorized"
+-- which reads like a typo rather than a missing grant. Referencing a tag requires USAGE on
+-- the schema that holds it, exactly as referencing a table does.
+GRANT USAGE ON SCHEMA CINDER_ANALYTICS.ADMIN TO ROLE CINDER_DBT_PROD_ROLE;
+GRANT USAGE ON SCHEMA CINDER_ANALYTICS.ADMIN TO ROLE CINDER_DBT_CI_ROLE;
 GRANT APPLY ON TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY TO ROLE CINDER_DBT_PROD_ROLE;
+GRANT APPLY ON TAG CINDER_ANALYTICS.ADMIN.PII_CATEGORY TO ROLE CINDER_DBT_CI_ROLE;
 
 -- -------------------------------------------------------------------------------------
 -- Step 7 — Protect the raw payloads directly
