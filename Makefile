@@ -154,19 +154,19 @@ versions: ## Show deployed versions of the project object
 # =====================================================================================
 
 .PHONY: check
-check: seeds-match parse lint ## Everything CI checks, before you push
+check: lint seeds-match parse leak-scan ## Everything CI checks, before you push
 	@echo "All checks passed."
 
 .PHONY: lint
-lint: ## Lint the SQL (needs `make deps` and a working dev profile)
-	@# sqlfluff's dbt templater compiles the project to resolve ref() and source(), and
-	@# compilation connects to Snowflake. So linting needs credentials — which is why it is
-	@# not part of the credential-free `parse` target, and why CI runs it after connecting.
-	DBT_PROFILES_DIR=$(DEV_PROFILES_DIR) sqlfluff lint models tests --disable-progress-bar
+lint: ## Lint the SQL (no credentials needed)
+	@# sqlfluff is configured to use the JINJA templater against the stubs in .sqlfluff-stubs/,
+	@# so linting needs no database connection. The dbt templater would compile the project to
+	@# resolve ref() and source(), and compilation connects to Snowflake.
+	sqlfluff lint models tests --disable-progress-bar
 
 .PHONY: fix
 fix: ## Auto-fix what sqlfluff can
-	DBT_PROFILES_DIR=$(DEV_PROFILES_DIR) sqlfluff fix models tests --disable-progress-bar
+	sqlfluff fix models tests --disable-progress-bar
 
 .PHONY: parse
 parse: ## Validate project structure without connecting to Snowflake
@@ -181,6 +181,10 @@ seeds-match: ## Assert the committed seeds match their generator
 		exit 1; \
 	fi
 	@echo "Seeds match the generator."
+
+.PHONY: leak-scan
+leak-scan: ## Check for customer or environment-specific references
+	bash scripts/check_no_private_references.sh
 
 .PHONY: verify-semantic-view
 verify-semantic-view: ## Prove the semantic view answers a question, not just that it built
