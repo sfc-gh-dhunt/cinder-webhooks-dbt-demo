@@ -9,16 +9,21 @@
     chart people actually want. Both levels are exposed here, so distribution can be cut
     either way.
 
-    THE PARENT NAME PROBLEM, and how it is handled honestly. Cinder sends the parent's id
-    but not its name. A parent's name is only known if that parent has itself been applied
-    directly to some decision, which does happen but is not guaranteed. So:
+    THE PARENT NAME PROBLEM. Cinder sends a policy's `parent_id` but never the parent's
+    NAME. Parents are grouping nodes, not the things reviewers pick, so they are rarely
+    applied directly — which means their names usually cannot be recovered from the event
+    stream at all.
 
-      * `policy_parent_name` resolves from observed policies where possible.
-      * Where the parent has never been seen as a policy in its own right, the name is
-        null and `policy_parent_name_resolved` is false.
-      * `policy_group_name` gives you something always usable: the parent's name if known,
-        otherwise the policy's own name, so a root policy groups under itself rather than
-        under a null.
+    Resolved in three steps, most reliable first:
+
+      1. From an observed policy, when the parent has itself been applied directly.
+      2. From `seed_cinder_policy_areas`, a deliberately-maintained lookup. In a live
+         deployment populate it from Cinder's policies API, which does expose the full tree.
+      3. Otherwise null, with `policy_parent_name_resolved` reporting false so the gap is
+         visible rather than silent.
+
+    `policy_group_name` is always usable: the parent's name where known, otherwise the
+    policy's own name. A root policy groups under itself rather than under a null.
 
     This dimension is observed, not reference: it contains only policies that have actually
     been applied. A policy configured in Cinder but never used will not appear.
@@ -72,13 +77,17 @@ latest_attributes as (
 
 ),
 
--- Self-join to resolve parent names from policies observed in their own right.
+-- Resolve parent names, preferring an observed policy over the maintained lookup. The
+-- observed one is more likely to be current; the lookup is more likely to exist at all.
 parent_names as (
 
     select
-          policy_id       as parent_policy_id
-        , policy_name     as parent_policy_name
-    from latest_attributes
+          coalesce(o.policy_id, a.policy_area_id)             as parent_policy_id
+        , coalesce(o.policy_name, a.policy_area_name)         as parent_policy_name
+        , o.policy_id is not null                             as resolved_from_observed
+    from latest_attributes o
+    full outer join {{ ref('seed_cinder_policy_areas') }} a
+        on o.policy_id = a.policy_area_id
 
 )
 
@@ -94,6 +103,15 @@ select
     , l.policy_parent_id is null                                    as is_root_policy
     , l.policy_parent_id is not null and p.parent_policy_name is not null
                                                                     as policy_parent_name_resolved
+
+    -- Where the name came from, so an unexpected value is traceable to its source rather
+    -- than requiring a hunt through two possible origins.
+    , case
+          when l.policy_parent_id is null then 'root_policy'
+          when p.parent_policy_name is null then 'unresolved'
+          when p.resolved_from_observed then 'observed_policy'
+          else 'policy_area_seed'
+      end                                                           as policy_parent_name_source
 
     -- Always usable for grouping: the parent's name where known, otherwise the policy's
     -- own name. A root policy groups under itself; an unresolved parent groups under the

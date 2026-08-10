@@ -1,0 +1,330 @@
+version: 2
+
+models:
+
+  # =====================================================================================
+  # job.actioned
+  # =====================================================================================
+  - name: stg_cinder__job_actions
+    description: >
+      One row per job action delivery — a lifecycle movement on a job.
+
+      A job action is NOT a decision. Cinder does not emit this event when a decision is
+      made; decisions arrive inside `job.closed`. Treating job actions as moderation
+      outcomes undercounts decisions to zero.
+
+      Job actions record MOVEMENTS, not state. There is no job-state table in the webhook
+      surface, so a job's current status has to be reconstructed by ordering these events.
+      `fct_jobs` does that.
+    columns:
+      - name: job_action_event_sk
+        description: >
+          Synthesised delivery key. Cinder webhooks carry no delivery identifier, so this
+          is a hash of the event name and payload. See macros/cinder_helpers.sql for what
+          that design does and does not guarantee.
+        tests:
+          - unique
+          - not_null
+
+      - name: action
+        description: The action taken on the job.
+        tests:
+          - not_null
+          # WARN, NOT ERROR — deliberately. The published enums for this API are
+          # demonstrably incomplete: values have been observed in production that the
+          # documentation does not list. An error-severity test here would fail the build on
+          # valid data. This is a "tell me when something new appears" test, not a contract.
+          - accepted_values:
+              severity: warn
+              values:
+                - created
+                - made_decision
+                - skipped
+                - changed_queue
+                - escalated
+                - returned
+                - deferred
+                - cancelled
+                - paused
+                - resumed
+                - assigned
+                - commented
+
+      - name: action_source
+        description: What originated the action.
+        tests:
+          - not_null
+          - accepted_values:
+              severity: warn
+              values: ['auto', 'workflow', 'api', 'manual', 'agent']
+
+      - name: actor_type
+        description: >
+          Which actor shape the payload carried: `user`, `workflow`, or `none`. Sources
+          `auto`, `api` and `agent` carry neither a user nor a workflow, so `none` is a
+          legitimate value rather than missing data.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['user', 'workflow', 'none']
+
+      - name: actioned_at
+        description: Event time from the payload, timezone-aware. Not the ingestion time.
+        tests:
+          - not_null
+
+      - name: job_id
+        description: The job the action was taken on.
+        tests:
+          - not_null
+
+      - name: job_created_at
+        description: >
+          When the job was created. Present in practice although the published schema does
+          not promise it. Nullable for that reason.
+
+      - name: job_age_at_action_seconds
+        description: >
+          Job age at the moment of the action. Null when creation time is absent, rather
+          than zero — a fabricated zero would read as an instantly-handled job.
+
+      - name: job_category
+        description: >
+          Normalised from `job_category` on this event. The same concept is called
+          `category` on `job.closed` and carries a wider enum there. Both are accepted.
+        tests:
+          - accepted_values:
+              severity: warn
+              values:
+                - standard
+                - appeal
+                - qa
+                - golden
+                - qa_appeal
+                - training
+                - multi_review
+
+      - name: has_entity
+        description: >
+          Whether the payload carried an entity object at all. It is sometimes absent from
+          this event, so this flag makes that a visible property of the data rather than a
+          modelling gap.
+        tests:
+          - not_null
+
+      - name: queue_slug
+        description: >
+          Queue the job was in. The slug is the only queue identifier the webhooks expose,
+          so it is the business key — a queue rename that changes the slug appears as a new
+          queue.
+        tests:
+          - not_null
+
+      - name: delivery_count
+        description: How many times this delivery arrived. Greater than one means redelivery.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+              inclusive: true
+
+  # =====================================================================================
+  # job.closed
+  # =====================================================================================
+  - name: stg_cinder__job_closures
+    description: >
+      One row per job closure delivery.
+
+      Two properties determine how this event can be used, and both understate activity if
+      ignored. First, Cinder sends no `job.closed` at all when a job closes with zero
+      production decisions, so closure counts are a floor rather than a total. Second, the
+      event is not subscribed by default on a new webhook endpoint — an empty source table
+      usually means the subscription was never enabled, not that no jobs closed.
+    columns:
+      - name: job_closure_event_sk
+        description: Synthesised delivery key.
+        tests:
+          - unique
+          - not_null
+      - name: job_id
+        description: The job that closed.
+        tests:
+          - not_null
+          # One closure per job. A second closure delivery for the same job would mean
+          # either a redelivery that dedup failed to catch, or a genuine reopen-and-reclose
+          # cycle — both worth knowing about, neither worth failing a build over.
+          - unique:
+              severity: warn
+      - name: closed_at
+        description: Event time of closure, timezone-aware.
+        tests:
+          - not_null
+      - name: job_category
+        description: Normalised from `category` on this event. Wider enum than job.actioned.
+        tests:
+          - accepted_values:
+              severity: warn
+              values:
+                - standard
+                - appeal
+                - qa
+                - golden
+                - qa_appeal
+                - training
+                - multi_review
+      - name: closure_decision_count
+        description: >
+          Number of decisions in the closure payload. Should be at least one — Cinder does
+          not send this event for a zero-decision closure.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+              inclusive: true
+              severity: warn
+      - name: time_to_close_seconds
+        description: >
+          Creation to closure. Null rather than zero when creation time is missing.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+              severity: warn
+
+  # =====================================================================================
+  # Decision grain (from job.closed)
+  # =====================================================================================
+  - name: stg_cinder__decisions
+    description: >
+      One row per decision recorded on a closed job — the only decision surface in scope.
+
+      Sourced from the `decisions` array inside `job.closed`, not from `decision.created`.
+      That means no decision id, a coarse `source.type` in place of the full decision type
+      enum, and no classifier predictions, point updates, appeal outcomes or override
+      chains. It does carry who decided, when, under which policies, with which
+      enforcement, in which queue, on which entity — which covers the operational
+      questions.
+    columns:
+      - name: decision_sk
+        description: >
+          Synthesised from the closure key and the decision's position in the array, since
+          the closure payload carries no decision id.
+        tests:
+          - unique
+          - not_null
+      - name: job_closure_event_sk
+        description: The closure this decision belongs to.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_cinder__job_closures')
+              field: job_closure_event_sk
+      - name: decided_at
+        description: When the decision was made, timezone-aware.
+        tests:
+          - not_null
+      - name: decision_source_type
+        description: >
+          Coarse origin. `manual` is the only value implying a human decided; everything
+          else is machine-driven.
+        tests:
+          - not_null
+          - accepted_values:
+              severity: warn
+              values: ['manual', 'automated', 'workflow', 'api', 'agent']
+      - name: reviewer_email
+        description: >
+          The deciding reviewer. Null on automated decisions — that means "no human", not
+          "unknown human", so per-moderator metrics must exclude these rather than bucket
+          them.
+      - name: handle_time_seconds
+        description: >
+          Job creation to decision. The measure meant by "handle time" when comparing
+          queues and moderators. Null rather than zero when creation time is absent.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+              severity: warn
+      - name: policy_count
+        description: Policies applied by this decision.
+        tests:
+          - not_null
+      - name: is_final_decision
+        description: >
+          True for the last decision before the job closed. On a multi-review job the
+          earlier decisions are the individual reviews; filter on this for one decision per
+          closed job.
+        tests:
+          - not_null
+
+  - name: stg_cinder__decision_policies
+    description: >
+      One row per decision per applied policy.
+
+      Models two fields the published schema does not document: `parent_id`, which forms a
+      policy hierarchy and is absent rather than null on roots, and a nested per-policy
+      `enforcement_actions` array, which is the enforcement attributable to that specific
+      policy as opposed to the decision-level union across all of them.
+    columns:
+      - name: decision_policy_sk
+        description: Surrogate key over decision, policy and array position.
+        tests:
+          - unique
+          - not_null
+      - name: decision_sk
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_cinder__decisions')
+              field: decision_sk
+      - name: policy_id
+        description: Policy identifier.
+        tests:
+          - not_null
+      - name: policy_parent_id
+        description: >
+          Parent policy in the tree. Null for root policies — the key is absent from the
+          payload rather than set to null.
+      - name: is_root_policy
+        description: True when the policy has no parent.
+        tests:
+          - not_null
+      - name: decision_count_allocated
+        description: >
+          Fractional allocation of the decision across its policies, so a distribution sums
+          back to the true decision count instead of a multiple of it.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              inclusive: true
+
+  - name: stg_cinder__decision_enforcement_actions
+    description: >
+      One row per decision per enforcement action, from the DECISION-LEVEL array.
+
+      Deliberately not from the per-policy arrays: summing those would double-count any
+      action that two policies both call for, which is common — several harassment policies
+      all warn. Per-policy attribution lives in stg_cinder__decision_policies.
+    columns:
+      - name: decision_enforcement_action_sk
+        tests:
+          - unique
+          - not_null
+      - name: decision_sk
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_cinder__decisions')
+              field: decision_sk
+      - name: enforcement_action_slug
+        description: Bare action slug. No id, no display name, no severity is supplied.
+        tests:
+          - not_null
+      - name: is_no_action
+        description: >
+          `no_action` is a recorded outcome, not an absence of one. Flagged rather than
+          filtered, so excluding it from enforcement counts is a deliberate choice.
+        tests:
+          - not_null

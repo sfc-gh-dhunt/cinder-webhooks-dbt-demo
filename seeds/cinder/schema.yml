@@ -66,3 +66,30 @@ seeds:
         description: Simulated ingestion wall-clock time.
         tests:
           - not_null
+
+  - name: seed_cinder_policy_areas
+    description: >
+      Lookup from a parent policy id to its display name.
+
+      This seed exists because the webhook surface cannot supply it. Payloads carry a
+      policy's `parent_id` but never the parent's name, and parents are grouping nodes rather
+      than the things reviewers pick — so they are rarely applied directly and their names
+      usually cannot be recovered from the event stream at all.
+
+      Without this mapping, policy distribution can only be reported at leaf level, where it
+      fragments into unreadably thin slices.
+
+      TO MAINTAIN THIS IN A LIVE DEPLOYMENT: populate it from Cinder's policies API, which
+      does expose the full tree. Filling it in by hand also works and takes minutes. Any
+      parent id absent from here degrades gracefully — the policy falls back to its own name
+      and `policy_parent_name_resolved` reports false, so the gap stays visible.
+    columns:
+      - name: policy_area_id
+        description: Parent policy id, matching `parent_id` on policies in the payload.
+        tests:
+          - unique
+          - not_null
+      - name: policy_area_name
+        description: Display name for the policy area.
+        tests:
+          - not_null

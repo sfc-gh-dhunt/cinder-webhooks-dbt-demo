@@ -602,6 +602,33 @@ def write_seed(name: str, rows: list[tuple[str, str, str]]) -> None:
     print(f"  {path.relative_to(Path(__file__).parent.parent)}: {len(rows)} rows")
 
 
+def write_policy_areas() -> None:
+    """
+    The policy-area lookup.
+
+    Webhook payloads carry a policy's `parent_id` but never the parent's NAME. A parent name
+    is only recoverable from the event stream if that parent has itself been applied directly
+    to some decision, which is not guaranteed and usually does not happen — parents are
+    grouping nodes, not the things reviewers pick.
+
+    So the mapping has to come from outside the event stream. This seed is that mapping,
+    maintained deliberately rather than inferred. In a live deployment, populate it from
+    Cinder's policies API, which does expose the full tree. Until then, filling it in by hand
+    is a five-minute job and it is what makes policy distribution readable.
+
+    Any parent_id absent from this seed still works — it simply falls back to the policy's own
+    name, and `policy_parent_name_resolved` reports false so the gap is visible.
+    """
+    SEED_DIR.mkdir(parents=True, exist_ok=True)
+    path = SEED_DIR / "seed_cinder_policy_areas.csv"
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh, quoting=csv.QUOTE_ALL, lineterminator="\n")
+        writer.writerow(["policy_area_id", "policy_area_name"])
+        for parent in sorted(POLICY_PARENTS, key=lambda p: p["name"]):
+            writer.writerow([parent["id"], parent["name"]])
+    print(f"  {path.relative_to(Path(__file__).parent.parent)}: {len(POLICY_PARENTS)} rows")
+
+
 def main() -> None:
     print("Generating Cinder webhook seeds")
     actioned, queue_changes = job_actioned_rows()
@@ -609,6 +636,7 @@ def main() -> None:
 
     write_seed("seed_cinder_job_actioned", actioned)
     write_seed("seed_cinder_job_closed", closed)
+    write_policy_areas()
 
     changed = sum(queue_changes.values())
     print(f"  ({changed} queue changes across {len(queue_changes)} jobs)")
