@@ -83,6 +83,14 @@ jobs:
             exit 1
           fi
 
+      - name: Install dbt packages
+        # `dbt parse` refuses to run with packages declared but not installed, so deps has to
+        # come first even though nothing here executes SQL. This resolves from the network, not
+        # from Snowflake — which is why it belongs in the credential-free job.
+        env:
+          DBT_PROFILES_DIR: ${{ github.workspace }}/.github/ci-profiles
+        run: dbt deps
+
       - name: Parse the project
         # Structural validation with no database connection: catches broken refs, bad Jinja and
         # malformed YAML. The profile it reads carries no credentials and cannot connect.
