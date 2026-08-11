@@ -118,5 +118,3 @@ select
     , reviewer_email
     , handle_time_seconds
 from exploded
-
--- Touched to verify the performance gate analyses downstream dependents, not just changed models.
