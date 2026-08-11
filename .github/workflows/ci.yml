@@ -319,6 +319,14 @@ jobs:
         # connector to run EXPLAIN, and both come from this one.
         run: pip install --quiet --requirement requirements-validate.txt
 
+      - name: Install Cortex Code
+        # Only the explanation step needs this. It is installed after the Python tooling so that a
+        # failure here is unambiguous in the log, and it authenticates through the same
+        # connections.toml written below — there is no separate credential.
+        run: |
+          curl -LsS https://ai.snowflake.com/static/cc-scripts/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       # ---- Authentication ---------------------------------------------------------
       # Same key pair and same service user as job 2. What changed is AUTHORISATION, not
       # authentication: setup/08 grants that role SELECT on the production marts and staging
@@ -399,6 +407,7 @@ jobs:
         run: |
           cortex exec \
             --file .cortex/prompts/perf-review.md \
+            --connection ci \
             --allowed "Read,Grep,Glob" \
             --no-mcp \
             --max-turns 12 \

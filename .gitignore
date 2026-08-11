@@ -50,3 +50,6 @@ terraform.tfvars
 # Performance gate output. Uploaded as a CI artifact, never committed: it is a point-in-time
 # measurement of production, not source.
 .perf-gate-out/
+
+# Written by the performance gate step in CI and uploaded as an artifact. Not source.
+pr-comment.md
