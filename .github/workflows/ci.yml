@@ -415,15 +415,30 @@ jobs:
             -o pr-comment.md
 
       - name: Post the comment
+        # continue-on-error BECAUSE THE VERDICT MUST NOT DEPEND ON GITHUB'S API BEING UP. This
+        # step failed once on a transient `HTTP 502` from api.github.com, which failed the job and
+        # therefore skipped the build — a change was effectively condemned by an unrelated outage.
+        # The gate's verdict comes from `Apply the gate` and nowhere else; losing the comment
+        # degrades the report, and the findings are still in the uploaded artifact.
         if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -s pr-comment.md ]; then
-            gh pr comment "${{ github.event.pull_request.number }}" --body-file pr-comment.md
-          else
+          if [ ! -s pr-comment.md ]; then
             echo "::warning::No comment produced. See the perf-gate artifact for the raw findings."
+            exit 0
           fi
+          # Three attempts with a short backoff. Posting is the one step that depends on a third
+          # party being healthy, and a retry is cheaper than a re-run of the whole job.
+          for attempt in 1 2 3; do
+            if gh pr comment "${{ github.event.pull_request.number }}" --body-file pr-comment.md; then
+              exit 0
+            fi
+            echo "::warning::Comment attempt $attempt failed. Retrying."
+            sleep $((attempt * 5))
+          done
+          echo "::warning::Could not post the comment after 3 attempts. The findings are in the artifact."
 
       - name: Upload the measurements
         # The audit trail, and not optional. When a threshold is argued about in three months the
