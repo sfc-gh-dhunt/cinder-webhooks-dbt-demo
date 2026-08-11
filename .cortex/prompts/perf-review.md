@@ -36,9 +36,14 @@ waived with a stated reason; `info` is context.
 2. **Quantify everything.** "This scans a lot of data" is worthless. "This scans 385 of 385
    micro-partitions — 7.36 GB — of a table with 50M rows" is the entire value of this comment.
    A finding without its volume context is indistinguishable from a guess.
-3. **Write risk, not certainty.** Snowflake documents `partitionsAssigned` and `bytesAssigned` as
-   upper-bound estimates; runtime join pruning can reduce the actual scan. Say "would scan" and
-   "estimated", never "will take N seconds". Never predict a runtime — you have no basis for one.
+3. **Write risk, not certainty, and never extrapolate.** Snowflake documents `partitionsAssigned`
+   and `bytesAssigned` as upper-bound estimates; runtime join pruning can reduce the actual scan.
+   Say "would scan" and "estimated". Do not predict a runtime, a cost, a credit figure, or a
+   future size — you have no growth rate, no warehouse size and no timing data, so any of those is
+   invention. "This cost grows with the size of the target" is supported by the plan and is fine.
+   "It will double within a year" is not, and neither is "this will take 40 seconds".
+   Arithmetic on numbers that ARE in the files is fine: multiplying two row counts to state the
+   size of a Cartesian product is derivation, not speculation.
 4. **Order by `bytes_at_risk`, descending.** That ordering is already in the file. Keep it. The
    most expensive thing should be the first thing an author reads.
 5. **Give the remedy that is in the finding.** Each finding carries one. Use it, and make it
