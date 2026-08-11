@@ -93,6 +93,18 @@ DROP USER IF EXISTS CINDER_DEPLOY_SVC;
 DROP NETWORK POLICY IF EXISTS CINDER_CI_GITHUB_ACTIONS_POLICY;
 
 -- -------------------------------------------------------------------------------------
+-- Workspaces Git integration, from 07_workspaces_git.sql
+-- -------------------------------------------------------------------------------------
+-- IF YOU CREATED THIS WITH TERRAFORM, use `terraform destroy` instead and leave this
+-- commented. Dropping it here removes the object while Terraform still has it in state,
+-- and the next plan will try to recreate something it thinks it lost.
+--
+-- Dropping the integration does NOT revoke the GitHub App's authorisation — that lives on
+-- GitHub's side. To finish the job, remove it at
+-- https://github.com/settings/installations » Snowflake Computing » Uninstall.
+DROP INTEGRATION IF EXISTS GITHUB_APP_INTEGRATION;
+
+-- -------------------------------------------------------------------------------------
 -- Remaining account-level objects
 -- -------------------------------------------------------------------------------------
 DROP NOTIFICATION INTEGRATION IF EXISTS CINDER_DEMO_ALERTS;
@@ -111,3 +123,4 @@ SHOW WAREHOUSES LIKE 'CINDER_%';
 SHOW ROLES LIKE 'CINDER_%';
 SHOW USERS LIKE 'CINDER%SVC';
 SHOW NETWORK POLICIES LIKE 'CINDER_%';
+SHOW API INTEGRATIONS LIKE 'GITHUB_APP_INTEGRATION';

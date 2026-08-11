@@ -91,6 +91,13 @@ fails to resolve them. Every deploy path passes it: `make deploy`, both workflow
 `deploy-oidc` example. If you rename it, set a `SNOWFLAKE_EAI` repository variable to match, or
 CI will keep asking for the old name while `make deploy` carries on working.
 
+**Optional: edit this repo inside Snowsight.** `make setup-workspaces-git` creates an API
+integration so Workspaces can open the repository directly — edit, commit and push without
+leaving the browser. Independent of everything else, and there is a Terraform equivalent in
+[`terraform/`](terraform/) for shops that manage Snowflake that way. Both are documented
+together, including the browser authorisation step that neither can script and the several
+provider quirks that make the Terraform path slower to get right than it looks.
+
 Nothing runs on a schedule until you ask it to. The task and both alerts are created
 **suspended**, so a fresh account does not start consuming credits the moment it is set up:
 
@@ -466,6 +473,7 @@ setup/                  Snowflake objects. Run in order; all idempotent.
   --- deploy and build here: the files below attach to tables dbt creates ---
   05_apply_column_tags.sql reapply PII tags — MUST run after every rebuild
   06_operations.sql        data metric functions, scheduled task, alerts
+  07_workspaces_git.sql    optional: open this repo in Snowsight Workspaces
   99_teardown.sql          drop everything, including the service users
 
 seeds/
@@ -479,6 +487,7 @@ models/
   marts/                   dimensions and facts
   semantic/                the semantic view
 
+terraform/               the 07 setup as Terraform, for shops that prefer it
 macros/                  source switching, dedup key, schema naming
 tests/                   business invariants a generic test cannot express
 scripts/                 the private-reference guard used by pre-commit

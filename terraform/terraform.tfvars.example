@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars and edit. terraform.tfvars is gitignored — it holds no secrets,
+# but it does hold your org name, and this repository is meant to be shareable.
+
+# REQUIRED. The GitHub org or user that owns the repositories you want to open in
+# Workspaces. Scope it as tightly as the work allows.
+api_allowed_prefixes = ["https://github.com/your-org"]
+
+# Optional overrides.
+# snowflake_profile = "my_connection"    # from ~/.snowflake/connections.toml
+# snowflake_role    = "ACCOUNTADMIN"
+# integration_name  = "GITHUB_APP_INTEGRATION"
+# usage_roles       = ["SYSADMIN", "DEVELOPER"]

@@ -84,6 +84,13 @@ apply-tags: ## Reapply PII column tags (needed after every rebuild)
 setup-ci-access: ## Service users, keypair auth and CI network access
 	$(SNOW) sql -f setup/04_ci_access.sql
 
+.PHONY: setup-workspaces-git
+setup-workspaces-git: ## Optional: API integration so Snowsight Workspaces can open this repo
+	@# Optional and order-independent — nothing in the project depends on it. Edit the
+	@# API_ALLOWED_PREFIXES in the file first, then authorise the app in a browser; that step
+	@# cannot be scripted. A Terraform equivalent lives in terraform/.
+	$(SNOW) sql -f setup/07_workspaces_git.sql
+
 .PHONY: setup-operations
 setup-operations: ## Data metric functions, scheduled task, alerts
 	$(SNOW) sql -f setup/06_operations.sql
