@@ -111,13 +111,22 @@ jobs:
         # once is in the history for good, so it is checked mechanically.
         run: bash scripts/check_no_private_references.sh
 
+      - name: Test the performance gate's check logic
+        # The gate decides whether a merge is blocked, so its thresholds are tested rather than
+        # trusted. The tests run against query plans RECORDED from a real account, which is why
+        # they belong in this job: no connection, no warehouse, no cost.
+        run: python -m pytest scripts/perf_gate/tests -q
+
   # -----------------------------------------------------------------------------------
   # Job 2 — build and test against Snowflake, in schemas owned by this PR.
   # -----------------------------------------------------------------------------------
   build:
     name: Build and test
     runs-on: ubuntu-latest
-    needs: validate
+    # Waits on the performance gate as well as validation. The gate answers "will this be slow"
+    # without spending anything, so there is no reason to pay for a build that a Cartesian join
+    # has already condemned.
+    needs: [validate, perf-gate]
     steps:
       - uses: actions/checkout@v4
 
@@ -261,3 +270,174 @@ jobs:
       - name: Remove credentials
         if: always()
         run: rm -rf ~/.snowflake
+
+  # -----------------------------------------------------------------------------------
+  # Job 3 — will this be slow in production? Answered without building anything.
+  # -----------------------------------------------------------------------------------
+  # THE PROBLEM THIS EXISTS FOR. Job 2 catches a model that is wrong. Nothing catches a model
+  # that is correct and too slow — and on a project large enough that the CI build stops being
+  # affordable, job 2 is the first thing to get skipped. The timeout is then discovered in
+  # production instead.
+  #
+  # HOW IT AVOIDS THE BUILD. EXPLAIN compiles a statement and returns its query plan without
+  # executing it: which micro-partitions each scan would touch, how many bytes that is, and
+  # whether the optimiser resolved a join to a Cartesian product. It needs no running warehouse
+  # and consumes cloud services credits only. The expensive question gets a cheap answer.
+  #
+  # WHY IT RUNS BEFORE JOB 2. The gate is most useful exactly where the build is unaffordable,
+  # so it has to stand alone and report first. Job 2 waits on it.
+  #
+  # WHAT IT DELIBERATELY DOES NOT DO. It creates no schemas, deploys no project and runs no
+  # model. It compiles, plans and comments. It also does not review SQL: style, naming and logic
+  # belong to job 1 and to whatever code reviewer you run. A finding that would be equally true
+  # without knowing the production table sizes is somebody else's job.
+  perf-gate:
+    name: Performance gate (no build)
+    runs-on: ubuntu-latest
+    needs: validate
+    permissions:
+      contents: read
+      # Only to post the findings comment. Nothing here writes code.
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The gate diffs against the MERGE BASE, so it needs history rather than a shallow
+          # clone. Without this, git merge-base has nothing to work with and every file in the
+          # repository looks changed.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-validate.txt
+
+      - name: Install tooling
+        # The dbt toolchain, NOT requirements-deploy.txt. The two pin incompatible Snowflake
+        # connectors, which is why they are separate files. The gate needs dbt to compile and the
+        # connector to run EXPLAIN, and both come from this one.
+        run: pip install --quiet --requirement requirements-validate.txt
+
+      # ---- Authentication ---------------------------------------------------------
+      # Same key pair and same service user as job 2. What changed is AUTHORISATION, not
+      # authentication: setup/08 grants that role SELECT on the production marts and staging
+      # schemas plus IMPORTED PRIVILEGES on SNOWFLAKE for the historical baseline.
+      #
+      # So this job can read production analytics, and a workflow file is a file a contributor
+      # can edit in a pull request. What keeps that safe is the tool allowlist further down, not
+      # the grant.
+      - name: Configure Snowflake connection
+        run: |
+          mkdir -p ~/.snowflake
+          chmod 700 ~/.snowflake
+          printf '%s' "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > ~/.snowflake/rsa_key.p8
+          chmod 600 ~/.snowflake/rsa_key.p8
+          cat > ~/.snowflake/connections.toml <<'CONNTOML'
+          [ci]
+          authenticator = "SNOWFLAKE_JWT"
+          CONNTOML
+          {
+            echo "account = \"$SNOWFLAKE_ACCOUNT\""
+            echo "user = \"$SNOWFLAKE_USER\""
+            echo "role = \"$SNOWFLAKE_ROLE\""
+            echo "warehouse = \"$SNOWFLAKE_WAREHOUSE\""
+            echo "database = \"$SNOWFLAKE_DATABASE\""
+            echo "private_key_file = \"$HOME/.snowflake/rsa_key.p8\""
+          } >> ~/.snowflake/connections.toml
+          chmod 600 ~/.snowflake/connections.toml
+
+      - name: Compile the project against production
+        # NO SCHEMA PREFIX HERE, AND THAT IS THE POINT. Job 2 rewrites schemas to PR<n>_* so a
+        # pull request cannot touch production. This job compiles against PRODUCTION relation
+        # names on purpose, because the value of the gate is production data volume. Pointed at a
+        # freshly built empty PR schema, every scan reports one partition out of one and the
+        # exercise proves nothing.
+        #
+        # compile, not run. It resolves ref() from the manifest and asks the database only
+        # whether a relation exists — which is what decides whether an incremental model's
+        # is_incremental() branch is reachable at all.
+        env:
+          DBT_PROFILES_DIR: ${{ github.workspace }}/.github/analysis-profiles
+          SNOWFLAKE_PRIVATE_KEY_PATH: /home/runner/.snowflake/rsa_key.p8
+        run: |
+          dbt deps
+          dbt compile
+
+      - name: Measure the plans
+        # Deterministic: extracts the plans, joins them to table volumes and historical cost, and
+        # applies the thresholds in .perf-gate.yml. No model involved. This step decides whether
+        # the check fails, so it has to be reproducible and arguable-with, which an LLM verdict
+        # would not be.
+        #
+        # continue-on-error so a blocking finding still gets explained in the comment before the
+        # job fails. The exit code is re-applied in the last step.
+        id: measure
+        continue-on-error: true
+        env:
+          DBT_PROFILES_DIR: ${{ github.workspace }}/.github/analysis-profiles
+          SNOWFLAKE_PRIVATE_KEY_PATH: /home/runner/.snowflake/rsa_key.p8
+        run: |
+          python -m scripts.perf_gate \
+            --base-ref "origin/${{ github.event.pull_request.base.ref || 'main' }}" \
+            --connection ci \
+            --warehouse "$SNOWFLAKE_WAREHOUSE"
+
+      - name: Explain the findings
+        # THE ALLOWLIST IS THE SECURITY CONTROL, not a convenience. This step runs with
+        # credentials that can read production, so the agent gets Read, Grep and Glob and nothing
+        # else: no Bash, so it cannot open a connection of its own; no Write and no Edit, so it
+        # cannot modify the repository or stage anything for exfiltration.
+        #
+        # It does not write the comment file either. -o captures the model's final response,
+        # which is why the prompt asks for the comment AS the response rather than as a file.
+        #
+        # --no-mcp because an MCP server is another tool surface to reason about. --max-turns as
+        # a runaway ceiling. --private keeps the run out of conversation history.
+        if: always()
+        continue-on-error: true
+        run: |
+          cortex exec \
+            --file .cortex/prompts/perf-review.md \
+            --allowed "Read,Grep,Glob" \
+            --no-mcp \
+            --max-turns 12 \
+            --private \
+            -o pr-comment.md
+
+      - name: Post the comment
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -s pr-comment.md ]; then
+            gh pr comment "${{ github.event.pull_request.number }}" --body-file pr-comment.md
+          else
+            echo "::warning::No comment produced. See the perf-gate artifact for the raw findings."
+          fi
+
+      - name: Upload the measurements
+        # The audit trail, and not optional. When a threshold is argued about in three months the
+        # raw plan is what settles it — and it is a point-in-time measurement of production, so it
+        # cannot be reconstructed afterwards.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-gate-${{ github.event.pull_request.number || github.run_id }}
+          path: |
+            .perf-gate-out/
+            pr-comment.md
+          if-no-files-found: warn
+
+      - name: Remove credentials
+        if: always()
+        run: rm -rf ~/.snowflake
+
+      - name: Apply the gate
+        # Last on purpose, so the comment and the artifact exist before the job fails. Non-zero
+        # only for an unsuppressed finding whose check is listed under `blocking:` in
+        # .perf-gate.yml — which is cartesian_join and nothing else by default.
+        if: always() && steps.measure.outcome == 'failure'
+        run: |
+          echo "::error::The performance gate found a blocking issue. See the pull request comment."
+          exit 1
