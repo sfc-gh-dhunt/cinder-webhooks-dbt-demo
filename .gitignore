@@ -20,3 +20,23 @@ venv/
 *.p8
 *.pem
 .env
+
+# -------------------------------------------------------------------------------------
+# Terraform
+# -------------------------------------------------------------------------------------
+# .terraform/ holds downloaded provider binaries — hundreds of megabytes, and rebuildable
+# with `terraform init`.
+.terraform/
+# State records what Terraform believes exists. It can contain object metadata and, for
+# some resources, secret values. Never commit it.
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+# Holds your GitHub org name. No secrets, but this repo is meant to be shareable.
+terraform.tfvars
+*.auto.tfvars
+# Saved plans can embed variable values.
+*.tfplan
+# NOT ignored, deliberately: .terraform.lock.hcl. Committing the lock file is what makes a
+# plan reproducible across machines — it pins provider versions and checksums. Ignoring it
+# is a common mistake that lets two people resolve different provider versions.
