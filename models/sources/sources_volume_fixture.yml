@@ -1,0 +1,57 @@
+version: 2
+
+# =====================================================================================
+# Synthetic volume source — exists only to give the CI performance gate something to bite on
+# =====================================================================================
+# NOT PART OF THE DEMO NARRATIVE. Nothing in staging or marts reads this. It is here so the
+# performance gate in .github/workflows/ci.yml can be demonstrated on a table where partition
+# pruning is a real number.
+#
+# WHY IT HAS TO EXIST. The seeded demo data occupies six micro-partitions in total. The gate's
+# central check is "how many partitions would this query actually scan", and at six partitions
+# every answer is both a full scan and completely harmless — so a well-written model and a
+# badly-written one produce indistinguishable plans. This table is 50M rows across ~385
+# partitions, which is small enough to build in a couple of minutes and large enough that
+# skipping 95% of it is a meaningful claim.
+#
+# Built by setup/08_perf_gate_access.sql rather than seeded: a CSV big enough to be useful
+# would be an unreviewable diff, and CI asserts that the committed seeds match their generator.
+
+sources:
+  - name: cinder_volume
+    description: >
+      Synthetic high-volume event stream used only by the CI performance gate.
+
+      Deliberately shaped so that the two timestamps behave differently. `EVENT_TS` is the
+      insertion order, so its per-partition ranges barely overlap and a time predicate on it
+      prunes well. `IMPORT_TS` trails it by a pseudo-random lag, so its ranges overlap and it
+      prunes less cleanly — which is the difference between a watermark that scales and one
+      that quietly does not.
+
+    database: "{{ var('raw_database') }}"
+    schema: FIXTURE
+
+    # No freshness block. The table is static and generated; asserting freshness on it would
+    # fail every run and teach nothing.
+
+    tables:
+      - name: job_events_volume
+        identifier: JOB_EVENTS_VOLUME
+        description: >
+          One row per synthetic moderation event. ~50M rows, ~385 micro-partitions, ~6.9 GiB.
+        columns:
+          - name: EVENT_ID
+            description: Monotonic surrogate key. Unique, and the merge key for the fixture model.
+          - name: EVENT_TS
+            description: >
+              When the event happened. The table is physically ordered by this column, so
+              predicates on it prune at compile time. This is the watermark a correct
+              incremental model would use.
+          - name: IMPORT_TS
+            description: >
+              When ingestion received it — between 0 and 72 hours after EVENT_TS. Present so
+              the fixture can demonstrate a watermark that prunes worse than it looks.
+          - name: PAYLOAD
+            description: >
+              The event body. Carries high-entropy hash fields on purpose: they are what make
+              the rows wide enough to occupy several hundred partitions rather than a few dozen.

@@ -187,6 +187,25 @@ models:
       # is not runtime-overridable, for a structural reason rather than an oversight.
       +snowflake_warehouse: 'CINDER_DEMO_WH'
 
+    # THE ONLY HAND-WRITTEN INCREMENTAL LAYER, AND IT IS A TEST FIXTURE.
+    #
+    # Everything above is a view or a dynamic table, which is the right answer for this
+    # workload. This layer exists so the CI performance gate has an incremental model to
+    # analyse — the gate's central case is a merge whose watermark stops pruning as the target
+    # grows, and nothing else in this project can fail that way.
+    #
+    # Kept in its own schema so it never appears alongside the modelled marts and cannot be
+    # mistaken for part of the demo. See models/perf_fixture/ for why the model is shaped the
+    # way it is.
+    perf_fixture:
+      +schema: 'PERF_FIXTURE'
+      +materialized: incremental
+      # Excluded from the default build. A 50M-row merge is not something every `dbt build`
+      # should pay for, and the gate only needs the target to EXIST so that EXPLAIN can compile
+      # a merge against it — not to be freshly refreshed. Build it deliberately:
+      #   dbt run --select perf_fixture
+      +tags: ['perf_fixture']
+
     semantic:
       +schema: 'SEMANTIC'
 
