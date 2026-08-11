@@ -216,6 +216,27 @@ models:
     semantic:
       +schema: 'SEMANTIC'
 
+    # THE AGENT AND ITS EVALUATION LIVE ALONGSIDE THE SEMANTIC VIEW, on purpose.
+    #
+    # A Cortex Agent is not a table, and dbt has no agent relation type — the
+    # cortex_agent materialization returns a view-typed handle purely so the node
+    # appears in the graph. Nothing is created in this schema by the agent itself.
+    #
+    # They share SEMANTIC with the semantic view because they share its lifecycle:
+    # the agent's only tool points at that view, so a change to the view is a
+    # change to what the agent can answer. Putting them in one schema means the
+    # DAG, the grants and the teardown all treat them as one unit.
+    #
+    # WHAT IS ACTUALLY CREATED HERE by these models:
+    #   * a CORTEX AGENT object            (agent_cinder_moderation)
+    #   * a TABLE of eval questions        (eval_questions_cinder)
+    #   * an internal STAGE               (CORTEX_EVAL_CONFIGS, holds the eval YAML)
+    #   * a DATASET                       (CINDER_AGENT_EVAL_SET, first eval run only)
+    #   * a small run-log TABLE           (eval_cinder_moderation__runs)
+    # The last three are build artifacts of the evaluation, not modelled data.
+    agents:
+      +schema: 'SEMANTIC'
+
 seeds:
   cinder_webhooks:
     +schema: 'SEEDS'
@@ -226,6 +247,24 @@ seeds:
         event: VARCHAR
         payload: VARCHAR
         import_ts: TIMESTAMP_NTZ
+
+    # Agent evaluation questions and their expected answers.
+    #
+    # The ground truth is held as flat prose here and assembled into the VARIANT
+    # JSON the evaluator needs by models/agents/eval_questions_cinder.sql — the
+    # same seed-cannot-carry-a-VARIANT constraint as the event payloads above.
+    #
+    # Flat prose is also the reviewable form: a pull request that changes what the
+    # agent is expected to say shows up as a readable diff rather than as edited
+    # JSON, and whether the new expectation is reasonable is exactly the kind of
+    # thing a human should be asked about.
+    evals:
+      +schema: 'SEEDS'
+      +column_types:
+        question_id: VARCHAR
+        semantic_model: VARCHAR
+        query_text: VARCHAR
+        ground_truth: VARCHAR
 
 tests:
   cinder_webhooks:

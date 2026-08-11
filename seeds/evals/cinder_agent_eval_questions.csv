@@ -1,0 +1,9 @@
+question_id,semantic_model,query_text,ground_truth
+q01,sem_cinder_moderation,How many decisions were recorded in total?,"Count of rows in the decisions fact. Must count decisions, not policy applications."
+q02,sem_cinder_moderation,What is the automation rate for decisions?,"Share of decisions where the decision was automated, expressed as a fraction or percentage of all decisions."
+q03,sem_cinder_moderation,What is the median handle time in hours by queue?,"Median handle time per queue, joining decisions or jobs to the queue dimension."
+q04,sem_cinder_moderation,How many jobs are still open?,"Count of jobs where is_open is true. Caveat: a job closing with zero decisions emits no closure event and appears open."
+q05,sem_cinder_moderation,Which policies are applied most often?,"Ranked policy application counts from the decision-policy grain. Raw application count, not allocated decision count."
+q06,sem_cinder_moderation,What share of decisions resulted in a violating outcome?,"Decisions with is_violating_outcome true, divided by total decisions."
+q07,sem_cinder_moderation,How many jobs were escalated?,Count of jobs where was_escalated is true.
+q08,sem_cinder_moderation,Which reviewers handled the most decisions?,"Decision counts grouped by reviewer. Human reviewers only — automated decisions carry no reviewer."

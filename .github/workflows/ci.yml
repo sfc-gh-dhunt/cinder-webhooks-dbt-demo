@@ -129,6 +129,12 @@ jobs:
     needs: [validate, perf-gate]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # FULL HISTORY, because the agent gate later in this job diffs against the merge
+          # base to decide whether the agent needs re-grading. The default shallow clone has
+          # no merge base, and `git diff origin/main...HEAD` fails on it with a message about
+          # a bad revision rather than about the clone depth.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -258,6 +264,79 @@ jobs:
               sys.exit("The semantic view returned no rows. Check the relationships.")
           print(f"Semantic view returned {count} grouped rows.")
           PY
+
+      # ---- Agent evaluation gate --------------------------------------------------
+      # WHAT THIS GATES. The build step above already created the agent in this pull
+      # request's schema, which proves the spec is valid DDL. It does not prove the agent
+      # still ANSWERS well — a spec can be perfectly valid and have lost a tool, or have
+      # instructions that quietly stopped working. So the agent is graded against a small
+      # evaluation set and the pull request fails if scores drop.
+      #
+      # WHY THIS IS GATED ON A DIFF RATHER THAN ALWAYS RUNNING. An evaluation invokes the
+      # agent once per question and then an LLM judge once per metric per question, so it
+      # costs Cortex credits every time. Most pull requests here touch neither the agent nor
+      # the semantic view it reads, and paying to re-grade an unchanged agent buys nothing.
+      #
+      # NOTE WHAT IS AND IS NOT BEING DONE HERE. This is NOT state-based selection — the file
+      # header is explicit that faking dbt state comparison is the wrong answer, and this does
+      # not attempt it. It asks git a much narrower question: did this pull request touch the
+      # files that can change the agent's behaviour? The FAN-OUT from there is dbt's own DAG,
+      # via `--select agent_cinder_moderation+`, which is the mechanism working as intended
+      # rather than a substitute for it.
+      #
+      # WHY THE MERGE BASE AND NOT `HEAD~1`. A pull request with several commits, or one that
+      # has had main merged into it, has no single meaningful previous commit.
+      # `origin/main...HEAD` asks what this branch changed relative to where it diverged.
+      - name: Decide whether the agent needs re-grading
+        id: agent_scope
+        run: |
+          CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- \
+            models/agents/ \
+            models/semantic/ \
+            seeds/evals/ \
+            macros/materializations/ \
+            tests/assert_agent_ \
+            || true)
+
+          if [ -n "$CHANGED" ]; then
+            echo "Agent-affecting files changed:"
+            echo "$CHANGED"
+            echo "run_gate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No changes under models/agents, models/semantic, seeds/evals or the"
+            echo "materializations. The agent is unchanged, so re-grading it would cost"
+            echo "credits and tell us nothing. Skipping."
+            echo "run_gate=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Grade the agent
+        if: steps.agent_scope.outputs.run_gate == 'true'
+        # `--select agent_cinder_moderation+` is the whole selection story: the agent, the
+        # evaluation model downstream of it, and the two assertions downstream of that. The
+        # graph is what knows which evals belong to which agent — nobody maintains that list.
+        #
+        # RE-RUNNING THE AGENT HERE IS DELIBERATE AND FREE. The materialization fingerprints
+        # the spec into the version comment, so a second run against an unchanged spec skips
+        # the commit entirely. That means this step also exercises the idempotency path on
+        # every pull request, which is the branch most likely to rot unnoticed.
+        #
+        # `eval_run: true` is what turns a staged config into a paid run. Without it the
+        # evaluation model keeps the config in sync and the gate passes vacuously — which is
+        # why assert_agent_eval_scores.sql treats "eval_run was true but no run exists" as a
+        # failure rather than a pass.
+        #
+        # IF THIS STEP FAILS WITH A PRIVILEGE ERROR, the CI role is missing the evaluation
+        # grants: SNOWFLAKE.CORTEX_USER, USE AI FUNCTIONS and EXECUTE TASK ON ACCOUNT. They
+        # are account- and database-level, so unlike creating the agent they cannot be
+        # inherited from owning the pull request's schema. Apply setup/09_agent_access.sql.
+        run: |
+          snow dbt execute \
+            --connection ci \
+            --database "$SNOWFLAKE_DATABASE" \
+            --schema DBT \
+            "$DBT_PROJECT_NAME" build \
+            --select agent_cinder_moderation+ \
+            --vars "{\"cinder_schema_prefix\": \"$CI_SCHEMA_PREFIX\", \"cinder_source_mode\": \"seed\", \"eval_run\": true}"
 
       # ---- Teardown ---------------------------------------------------------------
       # always(), so a failed build does not leave schemas and a project object behind. CI
