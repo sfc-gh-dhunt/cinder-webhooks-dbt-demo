@@ -1,0 +1,25 @@
+# =====================================================================================
+# Profile used only by `dbt parse` in CI
+# =====================================================================================
+# `dbt parse` needs a profile to exist, but never connects. This file lets the lint job run
+# with no credentials at all, which is the point: structural validation should not require
+# access to a warehouse.
+#
+# The real project profile is ../../profiles.yml. That one is bundled into the deployed
+# project object and carries no credentials either, because authentication inside Snowflake
+# is the session's.
+#
+# Nothing here is a secret. There is deliberately nothing here that could be.
+
+cinder_webhooks:
+  target: parse_only
+  outputs:
+    parse_only:
+      type: snowflake
+      account: parse-only-not-a-real-account
+      user: parse_only
+      role: parse_only
+      database: CINDER_ANALYTICS
+      schema: PUBLIC
+      warehouse: parse_only
+      threads: 1

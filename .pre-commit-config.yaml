@@ -1,0 +1,47 @@
+# =====================================================================================
+# pre-commit hooks
+# =====================================================================================
+# Install once:  pip install pre-commit && pre-commit install
+#
+# These are the cheap checks worth running before every commit. SQL linting is deliberately
+# NOT here: it needs the dbt packages installed and takes long enough to be irritating on
+# every commit. It runs in `make check` and in CI instead.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        # dbt schema files and GitHub workflows are both YAML, and a broken one fails late
+        # and confusingly.
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+      - id: detect-private-key
+        # The highest-value hook in this file. This project's CI uses a key pair, so a
+        # developer testing locally has a private key to hand — and this is what stops it
+        # being committed.
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        # The seed generator is the only Python in the repo, but it is committed code that
+        # produces committed data, so it gets linted like anything else.
+        files: ^seeds/.*\.py$
+      - id: ruff-format
+        files: ^seeds/.*\.py$
+
+  - repo: local
+    hooks:
+      - id: no-private-references
+        name: Check for customer or private references
+        # This repo is intended to be shareable. A customer name or a real account identifier
+        # committed once is committed forever in the history, so it is checked mechanically
+        # rather than by remembering.
+        entry: scripts/check_no_private_references.sh
+        language: script
+        pass_filenames: false

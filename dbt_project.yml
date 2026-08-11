@@ -1,0 +1,220 @@
+# =====================================================================================
+# Cinder webhooks — dbt project
+# =====================================================================================
+# Deployed as a native Snowflake DBT PROJECT object via `snow dbt deploy`.
+#
+# ############################################################################
+# # DO NOT "FIX" THE DEPRECATION WARNINGS. READ THIS FIRST.                  #
+# ############################################################################
+#
+# Snowflake's dbt runtime is currently **dbt 1.9.4**. A recent local dbt (1.11+) will emit
+# deprecation warnings against this project — specifically about `freshness` and
+# `loaded_at_field` belonging under `config:`, and about generic test arguments belonging
+# under `arguments:`.
+#
+# Those warnings describe syntax introduced AFTER 1.9.4. Adopting it makes the project fail
+# to deploy or parse inside Snowflake. The current syntax is correct for the runtime that
+# actually executes this project, and the warnings are the price of that.
+#
+# Revisit only once Snowflake's runtime advances. Check with:
+#     snow dbt execute --database ... --schema ... CINDER_WEBHOOKS parse
+# and read the `Running with dbt=` line.
+#
+# NOTE ON CONFIGURATION: this project uses dbt `vars`, never `env_var()`.
+# Snowflake-native dbt does not support `env_var()` — a project using it will fail to
+# deploy. Every configurable value below is a var with a plain-string default, so the
+# project runs with no configuration at all and can be redirected at runtime.
+#
+# Override vars at runtime:
+#
+#   CLI:  snow dbt execute --database ... --schema ... CINDER_WEBHOOKS run \
+#           --vars '{"cinder_source_mode": "raw", "raw_database": "MY_RAW_DB"}'
+#         (CLI options precede the project name; args after the subcommand go to dbt)
+#
+#   SQL:  EXECUTE DBT PROJECT CINDER_ANALYTICS.DBT.CINDER_WEBHOOKS
+#           ARGS = 'run --vars ''{"cinder_source_mode": "raw", "raw_database": "MY_RAW_DB"}''';
+# =====================================================================================
+
+name: 'cinder_webhooks'
+version: '1.0.0'
+config-version: 2
+
+profile: 'cinder_webhooks'
+
+model-paths: ['models']
+seed-paths: ['seeds']
+macro-paths: ['macros']
+test-paths: ['tests']
+analysis-paths: ['analyses']
+
+target-path: 'target'
+clean-targets:
+  - 'target'
+  - 'dbt_packages'
+
+require-dbt-version: ['>=1.8.0', '<2.0.0']
+
+# -------------------------------------------------------------------------------------
+# Variables
+# -------------------------------------------------------------------------------------
+vars:
+  # ---- Where does the raw data live? ------------------------------------------------
+  # Point these at your own landing zone. They only matter when a model is reading from
+  # the raw source rather than from seeds.
+  raw_database: 'CINDER_RAW'
+  raw_schema: 'OPENFLOW_CINDER'
+
+  # ---- Seeds or raw? ---------------------------------------------------------------
+  # 'seed'  — read the synthetic seeds only. Default, so a fresh clone runs with no
+  #           data and no ingestion pipeline.
+  # 'raw'   — read the landing tables only. What you would use in production.
+  # 'union' — read both. Useful while migrating, or for a workshop where you want the
+  #           synthetic edge cases alongside real traffic.
+  cinder_source_mode: 'seed'
+
+  # Per-event override, for the common real-world case where some events are already
+  # being ingested and others are not yet routed. Keys are the source table names,
+  # lowercased. Example:
+  #
+  #   cinder_source_mode_by_event:
+  #     job_actioned: 'raw'
+  #     job_closed: 'seed'
+  #
+  # Anything not listed falls back to cinder_source_mode above.
+  cinder_source_mode_by_event: {}
+
+  # ---- Data quality bounds ---------------------------------------------------------
+  # Events older than this are treated as implausible by the freshness sanity test.
+  # Widen it if you are loading a historical backfill.
+  cinder_min_plausible_event_date: '2020-01-01'
+
+  # Tolerance for clock skew when asserting that no event is timestamped in the future.
+  cinder_future_event_tolerance_hours: 1
+
+# -------------------------------------------------------------------------------------
+# Models
+# -------------------------------------------------------------------------------------
+# Schemas are set explicitly per layer and resolved verbatim by the generate_schema_name
+# macro override — so you get CINDER_ANALYTICS.STAGING, not CINDER_ANALYTICS.PUBLIC_STAGING.
+models:
+  cinder_webhooks:
+    +persist_docs:
+      relation: true
+      columns: true
+
+    staging:
+      +schema: 'STAGING'
+      +materialized: view
+      # The base layer is ephemeral: it exists to resolve seeds-versus-raw and to
+      # deduplicate. There is no reason to persist it, and keeping it ephemeral means
+      # the staging views read as a single query.
+      base:
+        +materialized: ephemeral
+
+    marts:
+      +schema: 'MARTS'
+      # THE MARTS ARE DYNAMIC TABLES, AND THE REFRESH MODE IS A DELIBERATE CHOICE.
+      #
+      # Snowflake maintains these on a schedule against the target lag below, so
+      # incrementality is declared rather than hand-written. What this replaced was a
+      # merge strategy with a 3-hour ingestion-time watermark in each fact — roughly
+      # thirty lines of Jinja whose correctness depended on the watermark column being
+      # the ingestion timestamp and never the event timestamp.
+      #
+      # REFRESH_MODE = AUTO lets Snowflake choose incremental versus full per model rather
+      # than failing at CREATE on a definition it cannot incrementalise, which an explicit
+      # INCREMENTAL would do.
+      #
+      # WHAT IT ACTUALLY CHOSE HERE: full refresh, for all ten models. Verified, not
+      # assumed. It is worth understanding why, because the reason is a chain rather than
+      # ten separate verdicts:
+      #
+      #   * The six dimensions resolve to FULL with "this dynamic table contains a complex
+      #     query ... set to FULL for more predictable performance". That is a performance
+      #     heuristic, not a rejection — the definitions are not unsupported, Snowflake
+      #     simply judged full refresh the better plan.
+      #   * The four facts then resolve to FULL with "change tracking is not supported on
+      #     dynamic tables with 'FULL' REFRESH_MODE". Every fact joins dimensions, and an
+      #     incremental dynamic table cannot read a full-refresh one without a
+      #     system-derived unique key or a frozen region. So FULL dimensions propagate.
+      #
+      # THIS IS ACCEPTED, NOT OVERLOOKED. The whole layer recomputes every six hours. At
+      # this volume that is cheap and always correct, and it is a demo. But it means the
+      # marts are declaratively maintained rather than incrementally refreshed, and anyone
+      # citing this project as an incremental-refresh example should know that. To change
+      # it you would have to make the dimensions incremental first — pinning the facts
+      # alone cannot work while their upstream is full.
+      #
+      # THE OTHER TRADE AUTO MAKES. Snowflake's guidance is that AUTO suits prototyping and
+      # that a version-controlled definition should pin an explicit mode before production,
+      # because AUTO resolves at CREATE time — so the mode a model ends up in is a property
+      # of when it was first built, not of what this file says. Two accounts deploying this
+      # commit can differ. Acceptable while the model set keeps changing; pin each model if
+      # it ever carries production cost.
+      #
+      # To check what any model resolved to, rather than trusting the above:
+      #     SHOW DYNAMIC TABLES IN SCHEMA CINDER_ANALYTICS.MARTS;
+      # and read refresh_mode alongside refresh_mode_reason.
+      #
+      # TWO REINITIALISATIONS THAT ARE EXPECTED, NOT FAULTS. A dynamic table fully
+      # reinitialises when an upstream base object is recreated, and both of these
+      # happen here by design:
+      #
+      #   * `dbt build` reseeds with CREATE OR REPLACE, so a local full build
+      #     reinitialises every mart. Unavoidable while the seeds are the source.
+      #   * `make apply-tags` sets tags on dim_reviewer and dim_entity, which are base
+      #     objects of the fact tables. Changing a policy on a base object of an
+      #     incremental dynamic table triggers reinitialisation downstream.
+      #
+      # Neither affects correctness. Both cost a full refresh, and both look alarming in
+      # the refresh history if you do not know to expect them.
+      +materialized: dynamic_table
+      +target_lag: '6 hours'
+      +refresh_mode: AUTO
+      # THE WAREHOUSE IS A LITERAL HERE, AND IT CANNOT BE A VAR. Dynamic tables carry
+      # their own compute reference, because a refresh is triggered by Snowflake's
+      # scheduler rather than by whoever is running dbt — there is no session warehouse
+      # to inherit at that moment. dbt-snowflake treats it as required: it is a
+      # non-Optional field on the dynamic table config and the create macro emits
+      # `warehouse = ...` unconditionally.
+      #
+      # It is not a var because dbt_project.yml is the file that DEFINES vars, so it is
+      # rendered before any of them exist. `{{ var('...') }}` here fails at parse with
+      # "Required var not found in config: Vars supplied to <Configuration> = {}". The
+      # usual escape hatch is env_var(), which Snowflake-native dbt does not support (see
+      # the note at the top of this file). So changing the refresh warehouse for another
+      # account means editing this line — the one configurable value in the project that
+      # is not runtime-overridable, for a structural reason rather than an oversight.
+      +snowflake_warehouse: 'CINDER_DEMO_WH'
+
+    semantic:
+      +schema: 'SEMANTIC'
+
+seeds:
+  cinder_webhooks:
+    +schema: 'SEEDS'
+    cinder:
+      # The payload column holds a JSON document. Load it as a string and PARSE_JSON it
+      # in the base layer — a seed cannot carry a VARIANT directly.
+      +column_types:
+        event: VARCHAR
+        payload: VARCHAR
+        import_ts: TIMESTAMP_NTZ
+
+tests:
+  cinder_webhooks:
+    +store_failures: true
+    # Test failures get their own schema, and not for tidiness alone. With
+    # store_failures on, every generic test in the project persists its failing rows as
+    # a table — around 145 of them here. Pointed at STAGING, those swamped the five
+    # actual staging views at a ratio of thirty to one, and the schema stopped being
+    # readable as a description of the transform layer. Anyone opening it reasonably
+    # concluded the project was full of abandoned placeholder tables.
+    #
+    # A layer schema should contain that layer's models. Test artifacts are build
+    # output, so they live somewhere that says so.
+    #
+    # Note this schema must exist and be granted to the deploy role — see
+    # setup/01_account_setup.sql. CI is unaffected: the CI role holds CREATE SCHEMA on
+    # the database and builds into its own prefixed namespace.
+    +schema: 'DBT_TEST_FAILURES'

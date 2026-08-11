@@ -1,0 +1,10 @@
+# =====================================================================================
+# Toolchain for deploying and executing the project object
+# =====================================================================================
+# Kept apart from requirements-validate.txt because dbt-snowflake and snowflake-cli pin
+# incompatible versions of the shared Snowflake connector. See that file for the detail.
+#
+# Note what is NOT here: dbt. The deployed project object runs on Snowflake's own dbt runtime,
+# so the runner never needs a dbt installation to build or test the project. It only needs the
+# CLI to deploy it and to issue the verification queries.
+snowflake-cli~=3.18.0

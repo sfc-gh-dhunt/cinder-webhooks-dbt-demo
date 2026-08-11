@@ -1,0 +1,118 @@
+# =====================================================================================
+# sqlfluff configuration
+# =====================================================================================
+# Templater set to dbt so Jinja is rendered before linting. That means linting needs the dbt
+# packages installed and a resolvable profile — which is why `make lint` and the CI lint job
+# run after `dbt deps`.
+[sqlfluff]
+# JINJA, NOT DBT, and deliberately.
+#
+# sqlfluff's dbt templater renders Jinja by compiling the project, and compilation opens a
+# database connection. That makes linting require warehouse credentials, which defeats the
+# purpose of a cheap pre-flight check and couples the linter to a working profile.
+#
+# The jinja templater renders with the stub macros in .sqlfluff-stubs/ instead: no connection,
+# no dbt installation, no credentials. The trade-off is that a NEW macro called from a model
+# needs a stub adding, or linting fails with "'X' is undefined". That is a small, obvious,
+# self-announcing cost.
+templater = jinja
+dialect = snowflake
+max_line_length = 100
+# Rules deliberately switched off, each for a reason:
+#
+#   LT02  indentation. This project uses leading-comma alignment for readability in long
+#         SELECT lists, which sqlfluff's indentation model disagrees with.
+#   ST06  select wildcard ordering. Staging models intentionally re-select columns in a
+#         readable order rather than the order sqlfluff would impose.
+#   RF04  keywords as identifiers. Cinder's own field names include `action` and `source`;
+#         renaming them to satisfy a linter would make the models harder to trace back to
+#         the payload, which is the opposite of useful.
+#   AM04  outer join column count. Triggered by the full outer joins in reconciliation tests,
+#         where the wide result is the point.
+#   LT01  single-space enforcement. The models align the `as` keyword down long SELECT lists so
+#         the output column names read as a column rather than having to be hunted for. That
+#         alignment requires multiple spaces, and sqlfluff's alignment support does not express
+#         it — `spacing_before = align` on alias_expression still reports every aligned alias.
+#         Excluding one cosmetic rule is a better trade than unaligning twenty files, and the
+#         remaining layout rules still apply.
+#   LT04  comma line position. This project uses LEADING commas in SELECT lists (so adding a
+#         column touches one line, not two) and TRAILING commas after CTE definitions (which is
+#         near-universal and reads correctly). No single global setting expresses both, and
+#         forcing leading commas onto CTEs would be strange to every reader.
+exclude_rules = LT01, LT02, ST06, RF04, AM04, LT04
+processes = 4
+
+[sqlfluff:indentation]
+tab_space_size = 4
+indented_joins = false
+indented_ctes = false
+implicit_indents = allow
+
+[sqlfluff:templater:jinja]
+load_macros_from_path = ./.sqlfluff-stubs
+
+[sqlfluff:templater:jinja:context]
+# `this` is a dbt variable, not a function — models write `{{ this }}`. It has to be a context
+# variable rather than a stub macro, or it renders as a macro object and the incremental blocks
+# become unparsable.
+this = db.schema.this_model
+# Models call config() and the stubs above shadow dbt's builtins, so undefined names should
+# be a hard error rather than silently rendering empty and producing mystifying parse errors.
+apply_dbt_builtins = False
+
+# Leading commas, aligned aliases.
+#
+# Both choices are about diff quality and scannability in long SELECT lists: a leading comma
+# means adding a column touches one line rather than two, and aligned aliases let you read the
+# output column names as a column rather than hunting for them.
+[sqlfluff:layout:type:comma]
+line_position = leading
+
+[sqlfluff:layout:type:alias_expression]
+# Retained for documentation: this is what alignment support looks like when it works. LT01 is
+# excluded above because it does not cover the leading-comma layout this project uses.
+align_within = select_clause
+align_scope = bracketed
+
+# Capitalisation: CONSISTENT rather than a fixed policy.
+#
+# The dbt models are written lower case throughout, which is the prevailing convention in dbt
+# projects and keeps the SQL visually quiet next to the surrounding Jinja. The setup scripts in
+# setup/ are written upper case, because they read as DDL and are run by hand.
+#
+# Rather than force one house style across two contexts with genuinely different readers,
+# `consistent` requires each file to pick one and stick to it. That catches the thing worth
+# catching — a file that mixes both — without generating a thousand diffs that improve nothing.
+[sqlfluff:rules:capitalisation.keywords]
+capitalisation_policy = consistent
+
+[sqlfluff:rules:capitalisation.identifiers]
+extended_capitalisation_policy = consistent
+
+[sqlfluff:rules:capitalisation.functions]
+extended_capitalisation_policy = consistent
+
+[sqlfluff:rules:capitalisation.literals]
+capitalisation_policy = consistent
+
+[sqlfluff:rules:capitalisation.types]
+extended_capitalisation_policy = consistent
+
+# Table aliases are implicit (`from closures c`), column aliases explicit (`x as y`).
+#
+# That split is intentional. A column without AS is genuinely ambiguous to read; a table alias
+# is unambiguous either way, and `from closures c` is the form used across this project and
+# most dbt codebases.
+[sqlfluff:rules:aliasing.table]
+aliasing = implicit
+
+[sqlfluff:rules:aliasing.column]
+aliasing = explicit
+
+[sqlfluff:rules:ambiguous.column_references]
+group_by_and_order_by_style = explicit
+
+# Shorthand casts (`x::varchar`) rather than CAST(x AS varchar). The models are dense with
+# VARIANT path extraction, where the shorthand keeps the path readable.
+[sqlfluff:rules:convention.casting_style]
+preferred_type_casting_style = shorthand

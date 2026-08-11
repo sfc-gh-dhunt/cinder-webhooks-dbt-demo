@@ -1,0 +1,26 @@
+# =====================================================================================
+# Package dependencies
+# =====================================================================================
+# Resolved by Snowflake during `snow dbt deploy` — you do not run `dbt deps` yourself
+# for the deployed project. That resolution needs network egress, which is why deploy
+# requires an External Access Integration. See setup/01_account_setup.sql.
+#
+# Versions are pinned to a compatible range rather than left open, so a deploy six
+# months from now resolves to something this project was actually tested against.
+#
+# Note: cross-folder local packages (`local: ../shared`) are NOT supported by
+# Snowflake-native dbt. Shared macros must be vendored into the project. This project
+# has no local package dependencies for that reason.
+# =====================================================================================
+
+packages:
+  # Generic tests and helpers. Used here for surrogate keys, composite uniqueness tests
+  # and expression assertions.
+  - package: dbt-labs/dbt_utils
+    version: ['>=1.3.0', '<2.0.0']
+
+  # Provides the `semantic_view` materialization, which turns a dbt model into a
+  # Snowflake SEMANTIC VIEW. This is what lets the semantic layer live in version
+  # control and in the same DAG as the marts that feed it.
+  - package: Snowflake-Labs/dbt_semantic_view
+    version: ['>=1.0.0', '<2.0.0']

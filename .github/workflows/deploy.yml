@@ -1,0 +1,136 @@
+# =====================================================================================
+# Deploy — publish the project object on merge to main
+# =====================================================================================
+# This is the production deployment. It does NOT run the models: it publishes a new version
+# of the project object and leaves execution to the scheduled task
+# (CINDER_ANALYTICS.DBT.RUN_CINDER_WEBHOOKS, created in setup/04_operations.sql).
+#
+# Separating publish from run is deliberate. A deploy that also ran the models would mean
+# every merge triggers a full production rebuild, at a time nobody chose, competing with the
+# schedule. Publishing is cheap and safe; running is neither.
+#
+# Each deploy creates a new VERSION$n on the project object. Previous versions remain, so a
+# rollback is a version switch rather than a revert-and-redeploy.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_after_deploy:
+        description: 'Also run a full build after deploying'
+        type: boolean
+        default: false
+
+# Never two deploys at once against the same project object. Not cancel-in-progress here —
+# unlike CI, interrupting a half-finished deploy is worse than waiting for it.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  # A SECRET, not a variable, so it is masked in run logs. Workflow logs are public on a
+  # public repository, and a job-level `env:` is echoed in every step's environment block —
+  # so an account identifier held as a variable is published on every run.
+  SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+  SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_PROD_USER }}
+  SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_PROD_ROLE }}
+  SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+  SNOWFLAKE_DATABASE: CINDER_ANALYTICS
+  # The external access integration that lets the deployed project resolve dbt packages.
+  # A repository variable rather than a literal: rename the EAI in setup/01 and CI would
+  # otherwise keep asking for the old name, while `make deploy` — which reads it from the
+  # Makefile — carried on working. Falls back to the default so a fresh fork needs no setup.
+  SNOWFLAKE_EAI: ${{ vars.SNOWFLAKE_EAI || 'CINDER_DEMO_DBT_EAI' }}
+  DBT_PROJECT_NAME: CINDER_WEBHOOKS
+
+jobs:
+  deploy:
+    name: Deploy project object
+    runs-on: ubuntu-latest
+    # A GitHub environment, so production deploys can require an approval and so the
+    # production secrets are scoped to it rather than being readable by every workflow.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-deploy.txt
+
+      - name: Install Snowflake CLI
+        run: pip install --quiet --requirement requirements-deploy.txt
+
+      - name: Configure Snowflake connection
+        run: |
+          mkdir -p ~/.snowflake
+          chmod 700 ~/.snowflake
+          printf '%s' "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > ~/.snowflake/rsa_key.p8
+          chmod 600 ~/.snowflake/rsa_key.p8
+          cat > ~/.snowflake/connections.toml <<CONNTOML
+          [prod]
+          account = "$SNOWFLAKE_ACCOUNT"
+          user = "$SNOWFLAKE_USER"
+          role = "$SNOWFLAKE_ROLE"
+          warehouse = "$SNOWFLAKE_WAREHOUSE"
+          database = "$SNOWFLAKE_DATABASE"
+          authenticator = "SNOWFLAKE_JWT"
+          private_key_file = "$HOME/.snowflake/rsa_key.p8"
+          CONNTOML
+          chmod 600 ~/.snowflake/connections.toml
+
+      - name: Remove local dbt artifacts before deploying
+        run: rm -rf dbt_packages package-lock.yml target logs
+
+      - name: Deploy
+        # Same command for a first deploy and an update. An update adds a version rather than
+        # replacing anything.
+        run: |
+          snow dbt deploy "$DBT_PROJECT_NAME" \
+            --connection prod \
+            --source . \
+            --database "$SNOWFLAKE_DATABASE" \
+            --schema DBT \
+            --external-access-integration "$SNOWFLAKE_EAI"
+
+      - name: Show versions
+        # Recorded in the job log so the deployed version is traceable from the commit
+        # afterwards, without anyone having to go and ask Snowflake.
+        run: |
+          snow sql -c prod -q "SHOW VERSIONS IN DBT PROJECT ${SNOWFLAKE_DATABASE}.DBT.${DBT_PROJECT_NAME};"
+
+      - name: Reapply column tags
+        # dbt rebuilds tables with CREATE OR REPLACE, which drops their column tags — and the
+        # masking policies are attached BY tag. So an untagged column is an unmasked column,
+        # and a rebuild silently removes protection.
+        #
+        # This is the single most important step in this file. It is idempotent and cheap, and
+        # it runs on every deploy because forgetting it is a data-protection incident rather
+        # than an inconvenience.
+        #
+        # It runs 05_apply_column_tags.sql, NOT the whole governance script. The governance
+        # script creates roles and policy DDL and needs ACCOUNTADMIN; requiring that to
+        # publish a model would give the deploy identity the run of the account. The tag
+        # script needs only OWNERSHIP of the tables it just built and APPLY on the tag.
+        run: snow sql -c prod -f setup/05_apply_column_tags.sql
+
+      - name: Optional full build
+        if: ${{ inputs.run_after_deploy }}
+        run: |
+          # CLI options BEFORE the project name. Everything after the `build` subcommand is
+          # forwarded verbatim to dbt, so --connection placed there is swallowed and the CLI
+          # falls back to the default connection, reporting "Connection default is not
+          # configured" — which points nowhere near the real mistake.
+          snow dbt execute \
+            --connection prod \
+            --database "$SNOWFLAKE_DATABASE" \
+            --schema DBT \
+            "$DBT_PROJECT_NAME" build
+
+      - name: Remove credentials
+        if: always()
+        run: rm -rf ~/.snowflake

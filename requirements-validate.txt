@@ -1,0 +1,26 @@
+# =====================================================================================
+# Toolchain for static validation (lint + parse). No Snowflake connection.
+# =====================================================================================
+# SPLIT FROM requirements-deploy.txt DELIBERATELY, and not for tidiness: dbt-snowflake and
+# snowflake-cli pin incompatible versions of the shared Snowflake connector, so installing
+# both in one environment fails with a pip resolution error.
+#
+# Splitting them is the fix and it is also the better shape — each CI job installs only what
+# it needs, so both jobs start faster.
+#
+# These versions LINT and PARSE the project on the runner. They are NOT the version that
+# executes it: Snowflake's dbt runtime is currently 1.9.4 and is not chosen here. Keeping the
+# runner ahead of the runtime surfaces deprecations early, which is also why the warnings this
+# project emits must not be "fixed" — see the note at the top of dbt_project.yml.
+dbt-core~=1.11.0
+dbt-snowflake~=1.11.0
+
+# sqlfluff uses the jinja templater against .sqlfluff-stubs/, so linting needs no database
+# connection and no working profile.
+#
+# PIN THIS TO THE VERSION YOU LINT WITH LOCALLY. sqlfluff changes rule behaviour across major
+# versions, and .sqlfluff is tuned to a specific one — the rules excluded there are excluded
+# because of how THIS version interprets them. A mismatch produces the worst kind of CI
+# failure: hundreds of violations on a branch that is clean on your machine, in files the
+# change never touched. Check with `sqlfluff --version` before bumping.
+sqlfluff~=4.3.0

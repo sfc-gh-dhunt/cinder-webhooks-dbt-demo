@@ -1,0 +1,12 @@
+target/
+dbt_packages/
+
+# Macros are Jinja-first, not SQL-first: many are fragments that only parse in the context of
+# the model that calls them, so linting them in isolation reports failures that are not real.
+macros/
+
+# The semantic view model body is SEMANTIC VIEW DDL (TABLES / RELATIONSHIPS / DIMENSIONS /
+# METRICS), not a SELECT statement. sqlfluff has no grammar for it, so it cannot be meaningfully
+# parsed — and it was already being skipped silently for exceeding the file-size limit. Ignoring
+# it explicitly is better than a file that appears linted and is not.
+models/semantic/
