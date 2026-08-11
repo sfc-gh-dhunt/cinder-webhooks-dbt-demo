@@ -1,12 +1,3 @@
-{{
-    config(
-        materialized='incremental',
-        unique_key='decision_sk',
-        incremental_strategy='merge',
-        on_schema_change='append_new_columns'
-    )
-}}
-
 /*
     Decision fact — one row per decision recorded on a closed job.
 
@@ -17,34 +8,27 @@
     and by moderator, share of decisions taken automatically, enforcement volume, policy
     distribution (via fct_decision_policies).
 
-    Incremental, keyed on the decision surrogate key and watermarked on INGESTION time
-    rather than event time. Event time is the wrong watermark for a webhook feed: a
-    redelivery or a late subscription can bring in an event timestamped earlier than
-    anything already loaded, and an event-time watermark would skip it silently.
+    Materialised as a dynamic table (configured for the whole marts layer in
+    dbt_project.yml). Snowflake maintains it against the target lag and works out what
+    changed, so this model states the decision grain and nothing about how to keep it
+    current.
 
-    Merge rather than append, so a redelivered closure updates its decisions in place
-    instead of duplicating them.
+    WHAT THIS REPLACED, AND WHY IT IS WORTH KNOWING. This was previously an incremental
+    model with a merge on decision_sk and a 3-hour overlap window watermarked on
+    first_seen_at. The watermark was deliberately INGESTION time rather than event time:
+    on a webhook feed, a redelivery or a newly-added subscription can produce an event
+    timestamped earlier than anything already loaded, and an event-time watermark drops it
+    silently. That distinction was load-bearing and easy to get wrong. Snowflake's change
+    tracking now handles late-arriving rows without the model having to reason about them,
+    which removes the whole class of error rather than documenting it.
 
-    If you change this model's incremental logic, rebuild with --full-refresh. A normal
-    incremental run only touches new rows and leaves data built by the old logic in place,
-    looking correct.
+    first_seen_at is still carried on the rows, because "when did we first see this" is a
+    real question about a webhook feed. It is no longer load-bearing for correctness.
 */
 
 with decisions as (
 
     select * from {{ ref('stg_cinder__decisions') }}
-
-    {% if is_incremental() %}
-    -- The 3-hour overlap absorbs late deliveries and clock skew between the ingestion
-    -- runtime and Snowflake; the merge on decision_sk makes reprocessing it idempotent.
-    where first_seen_at >= (
-        select coalesce(
-                   dateadd('hour', -3, max(existing.first_seen_at)),
-                   '1900-01-01'::timestamp_ntz
-               )
-        from {{ this }} existing
-    )
-    {% endif %}
 
 ),
 

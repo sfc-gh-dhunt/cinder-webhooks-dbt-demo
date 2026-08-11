@@ -196,9 +196,10 @@ jobs:
         # dependency order, so a downstream model is never built on top of a parent that just
         # failed. Running them separately publishes bad data first and complains afterwards.
         #
-        # --full-refresh because the PR schemas are new every time. It also sidesteps the class
-        # of bug where an incremental model's logic changed but its existing rows were built by
-        # the old logic and look perfectly fine.
+        # --full-refresh because the PR schemas are new every time, so every model is being
+        # created from scratch regardless. For the dynamic table marts this makes dbt issue
+        # CREATE OR REPLACE rather than trying to reconcile against a previous version that
+        # does not exist in a fresh PR schema.
         #
         # ARGUMENT ORDER IS LOAD-BEARING. Everything after the `build` subcommand is forwarded
         # verbatim to dbt, so the CLI's own options have to come BEFORE the project name.

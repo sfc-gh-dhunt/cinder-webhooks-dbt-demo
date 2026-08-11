@@ -194,10 +194,12 @@ It is ingestion wall-clock, second resolution, no timezone. Event time is `paylo
 and is timezone-aware.
 
 Using the ingestion timestamp as event time is the single most common mistake with this shape
-of landing table. It is used here only for ingestion lineage and incremental watermarking —
-which is the *correct* watermark for a webhook feed, because a redelivery or a late
+of landing table. It is used here for ingestion lineage, and it is the timestamp you would
+watermark on if you were hand-rolling incremental logic — because a redelivery or a late
 subscription can bring in an event timestamped earlier than anything already loaded, and an
-event-time watermark would skip it silently.
+event-time watermark would skip it silently. The marts are dynamic tables, so Snowflake's
+change tracking handles that case and nothing in this project depends on the watermark being
+right. The distinction still matters the moment anyone writes an incremental model here.
 
 ### 3. Closure counts understate closures
 

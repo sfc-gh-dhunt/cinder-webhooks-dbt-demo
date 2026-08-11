@@ -1,28 +1,3 @@
--- depends_on: {{ ref('stg_cinder__decisions') }}
---
--- The ref above is declared explicitly because the only other reference to this model is
--- inside the is_incremental() conditional below. dbt builds its dependency graph by statically
--- scanning for ref() calls, and a ref appearing solely inside a conditional is invisible on a
--- first, non-incremental run — so dbt would schedule this model before its parent exists.
---
--- Worth knowing: a local `dbt build` does not necessarily surface this, because the graph gets
--- resolved from a state where the parent already exists. Snowflake's dbt rejects it at deploy
--- time. That asymmetry makes it exactly the kind of defect that passes locally and fails in
--- production.
---
--- Note also that this explanation avoids writing the Jinja conditional delimiters literally.
--- Jinja renders before SQL comments mean anything, so a tag inside a comment is still parsed
--- as a tag — and an unclosed one here fails the whole model.
-
-{{
-    config(
-        materialized='incremental',
-        unique_key='decision_policy_sk',
-        incremental_strategy='merge',
-        on_schema_change='append_new_columns'
-    )
-}}
-
 /*
     Decision-policy fact — one row per decision per applied policy.
 
@@ -44,25 +19,26 @@
 
     Policy hierarchy is carried through, so distribution can be reported at leaf level or
     rolled up to the parent policy area. Rolled up is almost always the readable one.
+
+    Materialised as a dynamic table (see the marts config in dbt_project.yml).
+
+    THIS MODEL LOST A HAZARD IN THAT CHANGE, WHICH IS WORTH RECORDING. It used to open with
+    an explicit `depends_on` pragma for stg_cinder__decisions, because the only reference to
+    that model sat inside an incremental conditional. dbt resolves its dependency graph by
+    statically scanning for ref() calls, so a ref that exists only inside a conditional is
+    invisible on a first non-incremental run, and dbt would schedule this model before its
+    parent existed. Worse, a local `dbt build` often would not catch it — the graph resolves
+    against a state where the parent already exists — while Snowflake's dbt rejected it at
+    deploy time. Passes locally, fails in production.
+
+    The dynamic table has no conditional, so the only ref is the unconditional one below and
+    the pragma is no longer needed. Keep the pattern in mind for any future model that refs
+    something from inside a conditional.
 */
 
 with decision_policies as (
 
     select * from {{ ref('stg_cinder__decision_policies') }}
-
-    {% if is_incremental() %}
-    where decision_sk in (
-        select d.decision_sk
-        from {{ ref('stg_cinder__decisions') }} d
-        where d.first_seen_at >= (
-            select coalesce(
-                       dateadd('hour', -3, max(existing.decided_at)),
-                       '1900-01-01'::timestamp_ntz
-                   )::timestamp_ntz
-            from {{ this }} existing
-        )
-    )
-    {% endif %}
 
 )
 

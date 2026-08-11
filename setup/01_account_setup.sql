@@ -59,9 +59,11 @@ CREATE SCHEMA IF NOT EXISTS CINDER_ANALYTICS.SEEDS
 CREATE SCHEMA IF NOT EXISTS CINDER_ANALYTICS.STAGING
     COMMENT = 'One view per event type: payload flattened, deduplicated, typed';
 CREATE SCHEMA IF NOT EXISTS CINDER_ANALYTICS.MARTS
-    COMMENT = 'Dimensional model: conformed dimensions and event-grain facts';
+    COMMENT = 'Dimensional model: conformed dimensions and event-grain facts, as dynamic tables';
 CREATE SCHEMA IF NOT EXISTS CINDER_ANALYTICS.SEMANTIC
     COMMENT = 'Semantic view over the marts, for Cortex Analyst';
+CREATE SCHEMA IF NOT EXISTS CINDER_ANALYTICS.DBT_TEST_FAILURES
+    COMMENT = 'Failing rows persisted by dbt tests (store_failures). Build output, not a data layer';
 
 -- -------------------------------------------------------------------------------------
 -- External Access Integration
@@ -139,6 +141,9 @@ GRANT ALL ON SCHEMA CINDER_ANALYTICS.SEEDS TO ROLE CINDER_DBT_PROD_ROLE;
 GRANT ALL ON SCHEMA CINDER_ANALYTICS.STAGING TO ROLE CINDER_DBT_PROD_ROLE;
 GRANT ALL ON SCHEMA CINDER_ANALYTICS.MARTS TO ROLE CINDER_DBT_PROD_ROLE;
 GRANT ALL ON SCHEMA CINDER_ANALYTICS.SEMANTIC TO ROLE CINDER_DBT_PROD_ROLE;
+-- store_failures writes here on every test run, so the deploy role needs it as much as it
+-- needs the model schemas. Miss this grant and the tests fail rather than the models.
+GRANT ALL ON SCHEMA CINDER_ANALYTICS.DBT_TEST_FAILURES TO ROLE CINDER_DBT_PROD_ROLE;
 
 -- CI needs to create its own schemas and drop them again.
 GRANT CREATE SCHEMA ON DATABASE CINDER_ANALYTICS TO ROLE CINDER_DBT_CI_ROLE;

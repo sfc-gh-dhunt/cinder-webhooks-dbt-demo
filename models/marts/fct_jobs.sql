@@ -1,9 +1,3 @@
-{{
-    config(
-        materialized='table'
-    )
-}}
-
 /*
     Job fact — one row per job, whether or not it has closed.
 
@@ -20,13 +14,23 @@
     None of those can be answered from either event alone. Job actions know the movement
     history but not the outcome; closures know the outcome but not the movement history.
 
-    WHY THIS IS A FULL-REFRESH TABLE AND NOT INCREMENTAL. An accumulating snapshot mutates
-    rows that already exist — a new action on a three-week-old job changes that job's row.
-    An incremental build would have to re-derive every job touched anywhere in the window,
+    WHY THE ACCUMULATING SNAPSHOT MATTERS FOR REFRESH. This model mutates rows that already
+    exist — a new action on a three-week-old job changes that job's row. Hand-written
+    incremental logic would have to re-derive every job touched anywhere in the window,
     which is possible but is a well-known source of subtly stale rows when the window is
-    even slightly too narrow. At this scale a full rebuild is cheap and always correct. If
-    volume makes that untenable, the right change is to re-derive by job id for jobs with
-    any new event, not to narrow the window.
+    even slightly too narrow.
+
+    It is materialised as a dynamic table like the rest of the marts, and it resolves to
+    FULL refresh — as, in fact, does every other model in this layer. For this model that
+    is the right answer rather than a limitation: a full recompute of an accumulating
+    snapshot is always correct, and at this scale it is cheap. See the marts config in
+    dbt_project.yml for why the whole layer ends up full-refresh; the short version is that
+    the dimensions resolve to FULL on a performance heuristic and the facts inherit that
+    because they join them.
+
+    To see what it resolved to and why:
+        SHOW DYNAMIC TABLES LIKE 'FCT_JOBS' IN SCHEMA CINDER_ANALYTICS.MARTS;
+    and read refresh_mode alongside refresh_mode_reason.
 
     THE JOB UNIVERSE IS THE UNION OF BOTH EVENTS. A job can appear in the action history and
     never close (still open, or closed without a decision so no closure event was sent), or

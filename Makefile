@@ -132,7 +132,12 @@ build: ## Build and test everything locally
 	$(DBT) build
 
 .PHONY: rebuild
-rebuild: ## Full refresh. Required after changing incremental logic
+rebuild: ## Force a full rebuild, replacing the dynamic tables outright
+	@# The marts are dynamic tables, so Snowflake keeps them current on its own schedule and
+	@# this is not part of normal operation. What --full-refresh does here is make dbt issue
+	@# CREATE OR REPLACE rather than reconciling in place, which is what you want after
+	@# changing a model's SQL, its target lag, or its refresh mode. Note that replacing a
+	@# dynamic table always reinitialises it.
 	$(DBT) build --full-refresh
 
 .PHONY: resume-operations

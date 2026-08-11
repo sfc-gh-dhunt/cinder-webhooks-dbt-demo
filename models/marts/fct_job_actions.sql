@@ -1,12 +1,3 @@
-{{
-    config(
-        materialized='incremental',
-        unique_key='job_action_event_sk',
-        incremental_strategy='merge',
-        on_schema_change='append_new_columns'
-    )
-}}
-
 /*
     Job action fact — one row per job lifecycle movement.
 
@@ -21,21 +12,16 @@
     Two actor dimensions, and a row has at most one of them: a human reviewer OR a
     workflow. Actions with source `auto`, `api` or `agent` have neither, so both keys are
     null and `actor_type` is 'none'. That is a real category, not missing data.
+
+    Materialised as a dynamic table (see the marts config in dbt_project.yml). Previously
+    an incremental merge on job_action_event_sk with a 3-hour ingestion-time watermark;
+    Snowflake's change tracking now covers the late-delivery case that watermark existed
+    to absorb.
 */
 
 with job_actions as (
 
     select * from {{ ref('stg_cinder__job_actions') }}
-
-    {% if is_incremental() %}
-    where first_seen_at >= (
-        select coalesce(
-                   dateadd('hour', -3, max(existing.first_seen_at)),
-                   '1900-01-01'::timestamp_ntz
-               )
-        from {{ this }} existing
-    )
-    {% endif %}
 
 )
 

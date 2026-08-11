@@ -314,10 +314,12 @@ models:
       closure, job age, handle time by queue and moderator, and automated close share all
       come from here.
 
-      Built as a full-refresh table, not incremental. An accumulating snapshot mutates rows
-      that already exist, so an incremental build would have to re-derive every job touched
-      anywhere in the window — a well-known source of subtly stale rows when the window is
-      slightly too narrow.
+      Like the rest of the marts this is a dynamic table, and like the rest of them it
+      resolves to FULL refresh. For this model that is correct rather than a shortcoming: an
+      accumulating snapshot mutates rows that already exist, so any incremental scheme has
+      to re-derive every job touched anywhere in the window — a well-known source of subtly
+      stale rows when the window is slightly too narrow. Check what any mart resolved to
+      with SHOW DYNAMIC TABLES IN SCHEMA CINDER_ANALYTICS.MARTS and read refresh_mode_reason.
 
       KNOWN UNDERCOUNT on closures: Cinder sends no `job.closed` when a job closes with zero
       decisions, so such a job appears here as permanently open. `is_open` is therefore
