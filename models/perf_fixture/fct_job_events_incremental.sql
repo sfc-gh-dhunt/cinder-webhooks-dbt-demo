@@ -36,24 +36,24 @@
 ) }}
 
 select
-    event_id,
-    job_id,
-    event,
-    queue_slug,
-    actor_email,
-    event_ts,
-    import_ts,
-    payload:trace_id::varchar             as trace_id,
-    payload:content_fingerprint::varchar  as content_fingerprint,
-    datediff('minute', event_ts, import_ts) as ingestion_lag_minutes
+    src.event_id,
+    src.job_id,
+    src.event,
+    src.queue_slug,
+    src.actor_email,
+    src.event_ts,
+    src.import_ts,
+    src.payload:trace_id::varchar                    as trace_id,
+    src.payload:content_fingerprint::varchar         as content_fingerprint,
+    datediff('minute', src.event_ts, src.import_ts)  as ingestion_lag_minutes
 
-from {{ source('cinder_volume', 'job_events_volume') }}
+from {{ source('cinder_volume', 'job_events_volume') }} src
 
 {% if is_incremental() %}
     -- Only reachable once the target exists. On the first build this branch is absent and the
     -- model reads the whole source, which is expected and is not what the gate is looking for.
-    where event_ts >= (
-        select coalesce(max(event_ts), '1900-01-01'::timestamp_ntz)
-        from {{ this }}
+    where src.event_ts >= (
+        select coalesce(max(tgt.event_ts), '1900-01-01'::timestamp_ntz)
+        from {{ this }} tgt
     ) - interval '3 hours'
 {% endif %}
