@@ -144,7 +144,7 @@ def test_full_scan_of_a_small_table_is_silent():
 
 
 def test_merge_target_full_scan_is_reported_even_when_source_prunes_perfectly():
-    """The real measured case. Source pruned to 1 of 385 partitions - the model looks efficient
+    """The real measured case, from the read-only probe. Source pruned to 1 of 385 partitions - the model looks efficient
     by every text-visible measure - while the merge reads its whole 3.93 GB target."""
     f = facts(
         kind="merge",

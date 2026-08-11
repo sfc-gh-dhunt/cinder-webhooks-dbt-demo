@@ -476,6 +476,18 @@ the size of the target rather than the size of the increment, which is precisely
 incremental model that was fast last quarter becomes a timeout this one. The remedy is
 `incremental_predicates`, and the gate names it.
 
+**A privilege subtlety that shapes the design.** `EXPLAIN` requires the privileges needed to
+*execute* the statement, so planning a `MERGE INTO` a production table needs INSERT and UPDATE on
+it — which would mean granting CI **write** access to production in order to run a read-only
+check. So the gate does not plan the merge. It plans the semi-join the merge performs internally
+to find its matches, which needs only SELECT and reports the same numbers: measured on the
+fixture, both formulations return a target scan of 221 of 221 partitions and 3.93 GB.
+
+Worth knowing if you verify grants yourself: `USE ROLE` alone does not isolate privileges while
+secondary roles are active. The merge planned fine in a local session and failed in CI as the same
+role, because CI's service user has no secondary roles. Add `USE SECONDARY ROLES NONE` before
+testing what a service identity can actually do.
+
 **Only a Cartesian join blocks a merge.** Snowflake documents `partitionsAssigned` as an
 upper-bound estimate — runtime join pruning can reduce the real scan — so failing a merge on an
 unpruned scan can be wrong in a way the author cannot disprove without running the query, which

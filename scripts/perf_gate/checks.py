@@ -237,6 +237,10 @@ def _check_merge_target(facts: PlanFacts, thresholds: dict) -> list[Finding]:
     the failure people describe as "it used to be fast".
 
     Invisible in the SELECT and invisible to code review.
+
+    The figures come from a read-only semi-join probe rather than from the merge itself, because
+    EXPLAIN requires the privileges to execute what it plans and the gate must not hold write
+    access to production. Same numbers, no write grant. See gate.merge_target_probe.
     """
     if not facts.has_merge or not facts.merge_target:
         return []

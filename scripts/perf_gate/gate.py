@@ -19,8 +19,8 @@ from .checks import PlanFacts
 COMPILED_ROOT = Path("target/compiled")
 MANIFEST = Path("target/manifest.json")
 
-# dbt's own aliases inside a generated merge. Reused here so the synthesised merge looks like
-# the real one in the plan, which makes the plan readable next to a dbt log.
+# dbt's own aliases inside a generated merge. Reused here so the probe's plan reads recognisably
+# next to a dbt log.
 DEST = "DBT_INTERNAL_DEST"
 SRC = "DBT_INTERNAL_SOURCE"
 
@@ -133,27 +133,35 @@ def explain(cur, sql: str) -> tuple[dict[str, Any] | None, str | None]:
         return None, str(exc).strip().splitlines()[0]
 
 
-def synthesise_merge(select_sql: str, target: str, unique_key: str | list[str]) -> str:
-    """Build the merge dbt WILL run, so its target-side scan can be planned.
+def merge_target_probe(
+    select_sql: str, target: str, unique_key: str | list[str]
+) -> str:
+    """A READ-ONLY statement that plans the same target-side work the merge will do.
 
-    AN APPROXIMATION, AND WORTH BEING HONEST ABOUT IT. dbt generates the merge in its
-    materialization macro at run time, so it never appears in target/compiled/ — compilation
-    emits only the model's SELECT. Reconstructing it from the manifest's unique_key is therefore
-    a reasonable model of what dbt does rather than the statement itself.
+    WHY NOT JUST EXPLAIN THE MERGE. EXPLAIN requires the privileges needed to EXECUTE the
+    statement, so planning a `MERGE INTO production_table` needs INSERT and UPDATE on it. That
+    would mean granting CI write access to production to run a read-only check, which is exactly
+    backwards. Verified: with secondary roles disabled, as in CI, EXPLAIN of the merge fails with
+    `003001 (42501): SQL access control error`.
 
-    It is worth the approximation: the target-side scan is invisible in the SELECT, and it is the
-    signal that distinguishes an incremental model that scales from one that degrades as its
-    target grows.
+    So the target-side read is expressed as a semi-join instead, which is the work the merge does
+    internally to find its matches. It needs only SELECT, and it reports the same numbers —
+    measured on the fixture, both formulations return a target scan of 221/221 partitions and
+    3.93 GB.
+
+    STILL AN APPROXIMATION, and worth being honest about. dbt generates the real merge in its
+    materialization macro at run time, so it never appears in target/compiled/ — compilation emits
+    only the model's SELECT. This is a faithful model of the target-side scan, not the statement
+    dbt will actually run.
     """
     keys = [unique_key] if isinstance(unique_key, str) else list(unique_key)
-    on = " AND ".join(f"{SRC}.{k} = {DEST}.{k}" for k in keys)
-    first = keys[0]
+    match = " AND ".join(f"{DEST}.{k} = {SRC}.{k}" for k in keys)
+    projection = ", ".join(f"{DEST}.{k}" for k in keys)
     return (
-        f"MERGE INTO {target} AS {DEST}\n"
-        f"USING (\n{select_sql}\n) AS {SRC}\n"
-        f"ON {on}\n"
-        f"WHEN MATCHED THEN UPDATE SET {DEST}.{first} = {SRC}.{first}\n"
-        f"WHEN NOT MATCHED THEN INSERT ({first}) VALUES ({SRC}.{first})"
+        f"SELECT {projection}\n"
+        f"FROM {target} {DEST}\n"
+        f"JOIN (\n{select_sql}\n) {SRC}\n"
+        f"  ON {match}"
     )
 
 
@@ -276,7 +284,7 @@ def build_facts(
     config: dict[str, Any],
     history: dict[str, dict[str, Any]],
 ) -> list[PlanFacts]:
-    """Plan one model: its SELECT always, plus a synthesised merge when it is incremental."""
+    """Plan one model: its SELECT always, plus a read-only merge-target probe when incremental."""
     node = manifest["nodes"][unique_id]
     name = node["name"]
     sql = compiled_sql(manifest, unique_id)
@@ -299,14 +307,16 @@ def build_facts(
         ]
 
     out: list[PlanFacts] = []
-    statements: list[tuple[str, str]] = [("select", sql)]
+    statements: list[tuple[str, str, str | None]] = [("select", sql, None)]
 
     cfg = node.get("config", {})
     if cfg.get("materialized") == "incremental" and cfg.get("unique_key"):
         target = node["relation_name"]
-        statements.append(("merge", synthesise_merge(sql, target, cfg["unique_key"])))
+        statements.append(
+            ("merge_probe", merge_target_probe(sql, target, cfg["unique_key"]), target)
+        )
 
-    for kind, statement in statements:
+    for kind, statement, probe_target in statements:
         plan, error = explain(cur, statement)
         if error:
             out.append(
@@ -327,6 +337,12 @@ def build_facts(
             )
             continue
         parsed = parse_plan(plan)
+        # The probe is a SELECT, so there is no Merge operator to read the target from. It comes
+        # from the manifest instead, and stating it explicitly is what lets the merge-target check
+        # tell the target scan apart from the source scan.
+        if probe_target:
+            parsed["merge_target"] = probe_target
+            parsed["has_merge"] = True
         volumes = table_volumes(cur, {s["object"] for s in parsed["scans"]})
         out.append(
             PlanFacts(
