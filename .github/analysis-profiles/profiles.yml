@@ -1,0 +1,51 @@
+# =====================================================================================
+# Profile used only by the CI performance gate
+# =====================================================================================
+# THREE PROFILES IN THIS REPO, AND THE DIFFERENCE BETWEEN THEM IS THE POINT.
+#
+#   ../../profiles.yml            — bundled into the deployed project object. Carries no
+#                                   credentials, because authentication inside Snowflake is
+#                                   the session's.
+#   ../ci-profiles/profiles.yml   — `dbt parse` only. A fake account that cannot connect, so
+#                                   structural validation needs no access to anything.
+#   this file                     — `dbt compile` for the performance gate. This one DOES
+#                                   connect, and it is the only profile here that can.
+#
+# WHY THE GATE NEEDS A CONNECTING PROFILE. It compiles the project to obtain each changed
+# model's final SQL, then asks Snowflake to plan that SQL with EXPLAIN. Compilation resolves
+# ref() from the manifest, but an incremental model's `is_incremental()` branch depends on
+# whether the target relation exists — which is a question only the database can answer.
+#
+# WHAT IT STILL DOES NOT DO. It never runs a model. No `dbt run`, no `dbt build`, no refresh.
+# The service user behind it holds the CI role, which after setup/08 can read production and
+# write nothing to it.
+#
+# NO SCHEMA PREFIX HERE, DELIBERATELY. The build job rewrites schemas to PR<n>_* so a pull
+# request cannot touch production. This job does the opposite on purpose: it compiles against
+# PRODUCTION relation names, because the entire value of the gate is production data volume.
+# Pointed at a freshly-built empty PR schema it would report that every scan touches one
+# partition out of one and prove nothing.
+#
+# env_var() IS FINE IN THIS FILE. The restriction noted in dbt_project.yml applies to the
+# project rendered by Snowflake's dbt runtime. This profile is read by dbt Core on the runner,
+# which supports env_var() normally.
+
+cinder_webhooks:
+  target: analysis
+  outputs:
+    analysis:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      schema: PUBLIC
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      authenticator: SNOWFLAKE_JWT
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH') }}"
+      # Compilation is metadata work, not compute. A handful of threads is enough and keeps the
+      # relation-existence lookups from serialising.
+      threads: 4
+      # Fail fast on a bad credential rather than retrying into the job timeout.
+      connect_retries: 0
+      client_session_keep_alive: false

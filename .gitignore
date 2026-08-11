@@ -46,3 +46,10 @@ terraform.tfvars
 # NOT ignored, deliberately: .terraform.lock.hcl. Committing the lock file is what makes a
 # plan reproducible across machines — it pins provider versions and checksums. Ignoring it
 # is a common mistake that lets two people resolve different provider versions.
+
+# Performance gate output. Uploaded as a CI artifact, never committed: it is a point-in-time
+# measurement of production, not source.
+.perf-gate-out/
+
+# Written by the performance gate step in CI and uploaded as an artifact. Not source.
+pr-comment.md

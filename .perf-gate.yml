@@ -1,0 +1,72 @@
+# =====================================================================================
+# Performance gate configuration
+# =====================================================================================
+# Every threshold the gate uses, in one place. Nothing in the workflow or the prompt carries
+# a magic number, because a threshold that is invisible is a threshold nobody tunes.
+#
+# THE ONE HARD BLOCKER IS CARTESIAN JOIN, AND THE REASON MATTERS. Snowflake documents
+# partitionsAssigned and bytesAssigned as UPPER BOUND estimates: runtime join pruning can
+# reduce the actual scan below the compile-time figure. So a merge blocked for "scans the whole
+# table" may be wrong, and the author cannot disprove it without running the query — which is
+# the one thing this gate exists to avoid. A gate that can be wrong and cannot be argued with
+# gets switched off, and then it protects nothing.
+#
+# CartesianJoin is different in kind. The optimiser names it in the plan. There is no estimate
+# involved and no runtime behaviour that makes it acceptable at volume.
+#
+# Everything else starts advisory. Promote checks to blocking here once you have watched them
+# on real pull requests and know they do not cry wolf.
+
+version: 1
+
+# -------------------------------------------------------------------------------------
+# What blocks a merge
+# -------------------------------------------------------------------------------------
+blocking:
+  - cartesian_join
+
+# -------------------------------------------------------------------------------------
+# Thresholds
+# -------------------------------------------------------------------------------------
+thresholds:
+  # A scan is only interesting if the table is big. Below this, an unpruned scan is cheap and
+  # reporting it is noise — the demo's own seeded tables are three orders of magnitude smaller
+  # than this and would otherwise generate a finding on every model.
+  large_table_bytes: 1073741824          # 1 GiB
+
+  # Report a scan that touches more than this share of a large table's partitions. 0.9 rather
+  # than 1.0 because a scan that prunes 5% of a 6 GiB table has not meaningfully pruned.
+  unpruned_ratio: 0.9
+
+  # Total estimated bytes for one model's plan, above which the model is called out regardless
+  # of how well any individual scan pruned. This is the "it is just big" signal.
+  model_bytes_ceiling: 10737418240       # 10 GiB
+
+  # A merge whose own target scan exceeds this is doing unbounded work against the target
+  # rather than against the increment. The remedy is dbt's incremental_predicates.
+  merge_target_unpruned_ratio: 0.9
+
+  # How far back to look for a historical baseline in ACCOUNT_USAGE.
+  history_days: 30
+
+  # Downstream dependents to pull in beyond the models the diff actually touched. 1 keeps the
+  # comment readable; a full transitive closure on a large project is dozens of EXPLAINs and a
+  # wall of text nobody reads.
+  dependent_depth: 1
+
+# -------------------------------------------------------------------------------------
+# Suppressions
+# -------------------------------------------------------------------------------------
+# THE REASON FIELD IS REQUIRED, and that is the entire design. Some cartesian joins are
+# deliberate — cross-joining a small calendar or config dimension to expand rows is a normal
+# thing to do. Without a way to say so, the first correct-but-unwanted failure gets the whole
+# step deleted from the workflow.
+#
+# A suppression is echoed into the PR comment along with its reason, so it stays visible and
+# arguable rather than becoming invisible permission. An entry with no reason is rejected.
+#
+# suppressions:
+#   - model: dim_date_spine
+#     check: cartesian_join
+#     reason: "Cross join against a 400-row calendar seed to expand one row per day. Bounded by construction."
+suppressions: []

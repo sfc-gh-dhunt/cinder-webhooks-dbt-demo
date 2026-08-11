@@ -24,3 +24,8 @@ dbt-snowflake~=1.11.0
 # failure: hundreds of violations on a branch that is clean on your machine, in files the
 # change never touched. Check with `sqlfluff --version` before bumping.
 sqlfluff~=4.3.0
+
+# The performance gate: check logic is unit-tested against recorded query plans, and the
+# config is YAML. Both live in the credential-free validation job.
+pytest~=8.3.0
+PyYAML~=6.0.2

@@ -129,7 +129,8 @@ jobs:
             --connection prod \
             --database "$SNOWFLAKE_DATABASE" \
             --schema DBT \
-            "$DBT_PROJECT_NAME" build
+            "$DBT_PROJECT_NAME" build \
+            --exclude tag:perf_fixture
 
       - name: Remove credentials
         if: always()

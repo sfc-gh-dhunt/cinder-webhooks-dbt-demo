@@ -29,11 +29,12 @@ repos:
     rev: v0.8.4
     hooks:
       - id: ruff
-        # The seed generator is the only Python in the repo, but it is committed code that
-        # produces committed data, so it gets linted like anything else.
-        files: ^seeds/.*\.py$
+        # Two bodies of Python now: the seed generator, which produces committed data, and the
+        # performance gate, which decides whether a merge is blocked. Both are committed code
+        # and both get linted like anything else.
+        files: ^(seeds|scripts)/.*\.py$
       - id: ruff-format
-        files: ^seeds/.*\.py$
+        files: ^(seeds|scripts)/.*\.py$
 
   - repo: local
     hooks:
