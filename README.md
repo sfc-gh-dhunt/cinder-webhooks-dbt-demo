@@ -321,9 +321,12 @@ Snowflake-native dbt has **no built-in CI/CD**. Auto-deploy, PR validation and s
 refresh are assembled from primitives: the project object, the `snow` CLI, `EXECUTE DBT PROJECT`
 and Tasks. `.github/workflows/` is that assembly.
 
-**`ci.yml`** on every pull request: lint, assert the committed seeds match their generator,
-parse without a warehouse, then build and test against Snowflake in schemas namespaced by PR
-number, and drop them again — including on failure.
+**`ci.yml`** on every pull request, in three jobs. Lint, assert the committed seeds match their
+generator, and parse without a warehouse. Then the **performance gate**: compile each changed
+model and ask Snowflake to plan it against production volumes, without building anything. Then
+build and test against Snowflake in schemas namespaced by PR number, and drop them again —
+including on failure. The build waits on the gate, because there is no reason to pay for a build
+that a Cartesian join has already condemned.
 
 **`deploy.yml`** on merge to main: publish a new version of the project object and reapply the
 column tags. It deliberately does *not* run the models; the scheduled task does that. A deploy
@@ -428,6 +431,86 @@ State-based selection. `--state`, `--select state:modified` and defer-to-product
 available on Snowflake-native dbt today, so every PR builds the whole project. At this size
 that is seconds. If a project outgrows it, the answer is to split the project rather than to
 approximate state comparison.
+
+### Catching a model that is slow rather than wrong
+
+The build above catches a model that is **wrong**. Nothing in it catches one that is correct and
+**too slow**, and that is the failure that actually reaches production — because on a project
+large enough that the CI build stops being affordable, the build is the first thing to get
+skipped. Then the timeout is discovered by whoever is on call.
+
+The performance gate answers the expensive question cheaply. `EXPLAIN USING JSON` compiles a
+statement and returns its query plan **without executing it**: how many micro-partitions each
+scan would touch, how many bytes that is, and whether the optimiser resolved a join to a
+Cartesian product. It needs no running warehouse and consumes cloud services credits only.
+
+What it reads that a code reviewer cannot:
+
+| Signal | Source |
+|---|---|
+| Partitions a scan would touch, and how many it pruned | `EXPLAIN USING JSON` |
+| Cartesian join, named by the optimiser | `EXPLAIN USING JSON` |
+| How large the production tables actually are | `INFORMATION_SCHEMA.TABLES` |
+| What the model cost last time, including spill | `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY` |
+
+**Why it reads the plan and not the SQL.** The obvious version of this check is a text pattern:
+flag a predicate wrapped in a function, because that defeats partition pruning. Measured against
+the 385-partition fixture in this repo, it does not:
+
+| Predicate | Partitions scanned |
+|---|---|
+| `event_ts >= '2025-07-01'` | 22 / 385 |
+| `DATE_TRUNC('day', event_ts) >= '2025-07-01'` | 22 / 385 — prunes just as well |
+| `TO_CHAR(event_ts,'YYYY-MM-DD') >= '2025-07-01'` | 385 / 385 — full scan |
+
+`DATE_TRUNC` is monotonic, so the optimiser can still use each partition's min and max.
+`TO_CHAR` is not. A reviewer working from the text flags both and is wrong about one of them.
+Reading the SQL gives you a guess; reading the plan gives you a number. That difference is the
+entire reason this job exists, and it is why every check asserts on measured plan output.
+
+**The finding it was built for.** `fct_job_events_incremental` prunes its source to 1 partition
+out of 385 and looks efficient by every text-visible measure. The merge then scans all 221
+partitions of its own target — 3.93 GB — because the merge condition is only
+`source.event_id = target.event_id` with no predicate on the target side. That cost grows with
+the size of the target rather than the size of the increment, which is precisely how an
+incremental model that was fast last quarter becomes a timeout this one. The remedy is
+`incremental_predicates`, and the gate names it.
+
+**Only a Cartesian join blocks a merge.** Snowflake documents `partitionsAssigned` as an
+upper-bound estimate — runtime join pruning can reduce the real scan — so failing a merge on an
+unpruned scan can be wrong in a way the author cannot disprove without running the query, which
+is the one thing this avoids. A gate that can be wrong and cannot be argued with gets switched
+off, and then it protects nothing. Everything else is advisory, and promoted to blocking in
+`.perf-gate.yml` once you have watched it on real pull requests.
+
+Suppressions require a stated reason and are reported rather than dropped, so a waiver stays
+visible. Some Cartesian joins are deliberate.
+
+**What it deliberately does not do.** It does not review SQL. No style, naming, logic or test
+coverage — job 1 and your code reviewer own that. A finding that would be equally true without
+knowing the production table sizes has no business in this comment. It is also not a replacement
+for the build: it tells you a model will be expensive, never that it is correct.
+
+Run it yourself:
+
+```bash
+make gate-test          # check logic, against recorded plans, no credentials
+make gate               # against production volumes
+make gate-verify-free   # assert it spent no warehouse compute
+```
+
+That last one matters more than it looks. The premise is that the gate costs nothing to run, and
+if that stopped being true the failure would be invisible — correct findings, unexpected bill. So
+it is asserted: run the gate, then read back every statement the session issued and fail if any
+of them read or wrote data. On this project it reports 0.00 MB scanned across `EXPLAIN`, metadata
+`SELECT` and `USE` statements.
+
+The gate needs production read access that CI did not previously have — `setup/08_perf_gate_access.sql`
+grants it, and is explicit that this widens what a pull request can read. What keeps it safe is the
+tool allowlist: the agent that writes the comment gets `Read`, `Grep` and `Glob`, with no `Bash`,
+no `Write` and no `Edit`, so it cannot open a connection of its own or stage anything for
+exfiltration. It does not even write the comment file — `cortex exec -o` captures its final
+response.
 
 ---
 

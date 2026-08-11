@@ -212,8 +212,28 @@ versions: ## Show deployed versions of the project object
 # =====================================================================================
 
 .PHONY: check
-check: lint seeds-match parse leak-scan ## Everything CI checks, before you push
+check: lint seeds-match parse leak-scan gate-test ## Everything CI checks, before you push
 	@echo "All checks passed."
+
+.PHONY: gate-test
+gate-test: ## Unit-test the performance gate's check logic (no credentials needed)
+	@# Runs against query plans recorded from a real account rather than invented ones. The
+	@# thresholds here decide whether a merge is blocked, so they are tested, not trusted.
+	python -m pytest scripts/perf_gate/tests -q
+
+.PHONY: gate
+gate: ## Run the performance gate against production volumes (needs credentials)
+	@# Compiles the project and asks Snowflake to plan each changed model with EXPLAIN. Builds
+	@# nothing and refreshes nothing. Compare against the merge base, as CI does.
+	dbt compile
+	python -m scripts.perf_gate --base-ref origin/main --warehouse $${SNOWFLAKE_WAREHOUSE:-CINDER_DEMO_WH}
+
+.PHONY: gate-verify-free
+gate-verify-free: ## Assert the gate spends no warehouse compute (needs credentials)
+	@# The premise of the whole thing is that it costs nothing to run. Asserted rather than
+	@# assumed, because the failure would be invisible: correct findings, unexpected bill.
+	python -m scripts.perf_gate.verify_no_compute --base-ref origin/main --warehouse $${SNOWFLAKE_WAREHOUSE:-CINDER_DEMO_WH}
+
 
 .PHONY: lint
 lint: ## Lint the SQL (no credentials needed)
