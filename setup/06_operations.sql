@@ -157,7 +157,10 @@ CREATE OR REPLACE TASK CINDER_ANALYTICS.DBT.RUN_CINDER_WEBHOOKS
     COMMENT = 'Daily build of the Cinder webhooks dbt project'
 AS
     EXECUTE DBT PROJECT CINDER_ANALYTICS.DBT.CINDER_WEBHOOKS
-        ARGS = 'build --vars ''{"cinder_source_mode": "seed"}''';
+        -- --exclude tag:perf_fixture keeps the CI performance gate's fixture out of the nightly
+        -- build. That model exists so a merge can be PLANNED against it; it does not need
+        -- refreshing, and left in it is a 50M-row merge every night for no benefit.
+        ARGS = 'build --exclude tag:perf_fixture --vars ''{"cinder_source_mode": "seed"}''';
 
 -- Tasks are created suspended. Resume deliberately — an unattended schedule that nobody
 -- decided to switch on is how a demo turns into a surprise on a credit report.

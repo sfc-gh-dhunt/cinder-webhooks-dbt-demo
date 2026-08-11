@@ -171,7 +171,10 @@ jobs:
 
       - name: Create the PR schemas
         run: |
-          for layer in SEEDS STAGING MARTS SEMANTIC; do
+          # PERF_FIXTURE and DBT_TEST_FAILURES belong here too. The first holds a 3.7 GB
+          # fixture table, and both were leaking a schema per pull request until a storage
+          # query turned up PR4_DBT_TEST_FAILURES and PR5_PERF_FIXTURE still sitting there.
+          for layer in SEEDS STAGING MARTS SEMANTIC PERF_FIXTURE DBT_TEST_FAILURES; do
             snow sql -c ci -q "CREATE SCHEMA IF NOT EXISTS ${SNOWFLAKE_DATABASE}.${CI_SCHEMA_PREFIX}${layer};"
           done
 
@@ -228,6 +231,7 @@ jobs:
             --schema DBT \
             "$DBT_PROJECT_NAME" build \
             --full-refresh \
+            --exclude tag:perf_fixture \
             --vars "{\"cinder_schema_prefix\": \"$CI_SCHEMA_PREFIX\", \"cinder_source_mode\": \"seed\"}"
 
       - name: Verify the semantic view answers a question
@@ -261,7 +265,10 @@ jobs:
       - name: Drop the PR schemas and project
         if: always()
         run: |
-          for layer in SEEDS STAGING MARTS SEMANTIC; do
+          # PERF_FIXTURE and DBT_TEST_FAILURES belong here too. The first holds a 3.7 GB
+          # fixture table, and both were leaking a schema per pull request until a storage
+          # query turned up PR4_DBT_TEST_FAILURES and PR5_PERF_FIXTURE still sitting there.
+          for layer in SEEDS STAGING MARTS SEMANTIC PERF_FIXTURE DBT_TEST_FAILURES; do
             snow sql -c ci -q "DROP SCHEMA IF EXISTS ${SNOWFLAKE_DATABASE}.${CI_SCHEMA_PREFIX}${layer} CASCADE;" || true
           done
           snow dbt drop "$DBT_PROJECT_NAME" \

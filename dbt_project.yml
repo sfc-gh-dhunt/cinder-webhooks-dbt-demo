@@ -200,10 +200,17 @@ models:
     perf_fixture:
       +schema: 'PERF_FIXTURE'
       +materialized: incremental
-      # Excluded from the default build. A 50M-row merge is not something every `dbt build`
-      # should pay for, and the gate only needs the target to EXIST so that EXPLAIN can compile
-      # a merge against it — not to be freshly refreshed. Build it deliberately:
-      #   dbt run --select perf_fixture
+      # TAGGED SO IT CAN BE EXCLUDED FROM BUILDS, and it is excluded explicitly wherever a
+      # build runs — `--exclude tag:perf_fixture` in ci.yml, deploy.yml and the scheduled task.
+      # A tag on its own excludes nothing; it is only a handle for a selector.
+      #
+      # WHY EXCLUDE IT. The gate needs this target to EXIST so a merge can be planned against
+      # it. It does not need it refreshed. Left in the default build it is a 50M-row merge on
+      # every pull request and again every night in production, for no benefit — and with
+      # --full-refresh, as CI uses, a full 3.7 GB rewrite each time.
+      #
+      # Build it deliberately, once:
+      #   dbt run --select tag:perf_fixture
       +tags: ['perf_fixture']
 
     semantic:
