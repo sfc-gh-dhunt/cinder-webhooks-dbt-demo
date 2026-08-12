@@ -206,7 +206,7 @@ jobs:
             snow sql -c ci -q "CREATE SCHEMA IF NOT EXISTS ${SNOWFLAKE_DATABASE}.${CI_SCHEMA_PREFIX}${layer};"
           done
 
-      - name: Point the profile at the CI role
+      - name: Point the profile at the CI role and schema
         # profiles.yml names the production role, because that is right for the production
         # object and the field is mandatory. `snow dbt deploy` validates it against the
         # connecting role, so deploying as the CI user with that name in place fails.
@@ -214,9 +214,18 @@ jobs:
         # Rewritten here rather than solved by granting the CI user the production role, which
         # would defeat the separation, or by naming the CI role in the committed file, which
         # would make production deploy as CI. The edit exists only in this runner's checkout.
+        #
+        # THE SCHEMA IS REWRITTEN TOO, and it is not cosmetic. Every model sets its own schema,
+        # so the profile's schema is only a fallback for dbt — but it is also the SESSION's
+        # schema, and an agent evaluation runs FROM the current schema: it needs USAGE there
+        # plus CREATE FILE FORMAT and CREATE TASK. Left pointing at production's SEMANTIC, a
+        # pull request would either be refused or would create evaluation scaffolding in
+        # production. Pointed at this pull request's own schema, which CI created and therefore
+        # owns, it needs no additional grants and stays isolated.
         run: |
           sed -i "s/^      role: .*/      role: ${SNOWFLAKE_ROLE}/" profiles.yml
-          grep -E "^      role:" profiles.yml
+          sed -i "s/^      schema: .*/      schema: ${CI_SCHEMA_PREFIX}SEMANTIC/" profiles.yml
+          grep -E "^      (role|schema):" profiles.yml
 
       - name: Remove local dbt artifacts before deploying
         # dbt_packages/, package-lock.yml, target/ and logs/ must not be uploaded. The lock

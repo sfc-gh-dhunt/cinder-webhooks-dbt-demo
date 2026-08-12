@@ -39,6 +39,18 @@
 # just as surely. Environment separation here is by SCHEMA, applied through the
 # cinder_schema_prefix var in macros/generate_schema_name.sql — a pull request builds into
 # PR123_MARTS while production builds into MARTS, from identical code.
+#
+# `schema:` IS NOT JUST A FALLBACK, and this used to say PUBLIC on the reasoning that it was.
+# Every model sets its own schema, so dbt never places anything here — but this is also the
+# SESSION's schema, and an agent evaluation runs FROM the current schema: it needs USAGE there
+# along with CREATE FILE FORMAT and CREATE TASK. Pointed at PUBLIC, which no project role is
+# granted on, the evaluation failed with
+#
+#   Failed to validate query_text: Schema 'CINDER_ANALYTICS.PUBLIC' does not exist or not authorized
+#
+# which reads as a problem with the evaluation data rather than with the session. So it names a
+# schema the roles actually hold. CI rewrites this line to the pull request's own schema for the
+# same reason it rewrites the role — see .github/workflows/ci.yml.
 # =====================================================================================
 
 cinder_webhooks:
@@ -48,6 +60,6 @@ cinder_webhooks:
       type: snowflake
       role: CINDER_DBT_PROD_ROLE   # rewritten by CI; see the note above
       database: CINDER_ANALYTICS
-      schema: PUBLIC          # every model sets its own schema explicitly; see dbt_project.yml
+      schema: SEMANTIC        # see below; every model still sets its own schema explicitly
       warehouse: CINDER_DEMO_WH
       threads: 8
