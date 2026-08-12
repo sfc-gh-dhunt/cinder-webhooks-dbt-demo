@@ -46,20 +46,26 @@
 {%- set min_consistency = var('eval_min_logical_consistency', 0.7) -%}
 {%- set eval_ran = var('eval_run', false) -%}
 
-{%- set runs_table = target.database ~ '.' ~ 'SEMANTIC' ~ '.eval_cinder_moderation__runs' -%}
+{#- Derive the schema from the model rather than hardcoding it. Every schema in
+    this project is namespaced per pull request by the cinder_schema_prefix var, so
+    a literal 'SEMANTIC' is correct in production and wrong in CI — where it would
+    look for the runs table in the production schema and find either nothing or,
+    worse, another run's results. -#}
+{%- set eval_relation = ref('eval_cinder_moderation') -%}
+{%- set runs_table = eval_relation.database ~ '.' ~ eval_relation.schema ~ '.eval_cinder_moderation__runs' -%}
 
 {#- Resolve the current and previous run. Wrapped in `execute` because this runs
     at parse time too, when no query may be issued. -#}
 {%- set current_run = none -%}
 {%- set previous_run = none -%}
 {%- set agent_db = target.database -%}
-{%- set agent_schema = 'SEMANTIC' -%}
+{%- set agent_schema = eval_relation.schema -%}
 {%- set agent_name = 'agent_cinder_moderation' -%}
 
 {%- if execute -%}
     {%- set runs_exist = run_query(
-        "select count(*) as n from " ~ target.database ~ ".information_schema.tables "
-        ~ "where table_schema = '" ~ agent_schema ~ "' "
+        "select count(*) as n from " ~ eval_relation.database ~ ".information_schema.tables "
+        ~ "where table_schema = '" ~ eval_relation.schema ~ "' "
         ~ "and table_name = 'EVAL_CINDER_MODERATION__RUNS'"
     ) -%}
     {%- set have_table = (runs_exist.columns[0].values()[0] | int) > 0 -%}

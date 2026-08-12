@@ -43,9 +43,12 @@
     See the equivalent note in assert_agent_eval_scores.sql. -#}
 {%- do ref('agent_cinder_moderation') -%}
 
-{%- set agent_db = target.database -%}
-{%- set agent_schema = 'SEMANTIC' -%}
-{%- set agent_identifier = 'agent_cinder_moderation' -%}
+{#- Schema derived from the model, not hardcoded: schemas here are namespaced per
+    pull request, so a literal would check production's agent from a CI run. -#}
+{%- set agent_relation = ref('agent_cinder_moderation') -%}
+{%- set agent_db = agent_relation.database -%}
+{%- set agent_schema = agent_relation.schema -%}
+{%- set agent_identifier = agent_relation.identifier -%}
 {%- set agent_fqn = agent_db ~ '.' ~ agent_schema ~ '.' ~ agent_identifier -%}
 
 {#- What the spec must still contain. The tool name and the semantic view are the

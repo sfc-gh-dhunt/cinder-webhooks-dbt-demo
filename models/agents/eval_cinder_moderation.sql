@@ -103,25 +103,39 @@
     So all commentary lives up here, and the YAML below stays bare.
 
     ON `agent_name` BEING UNQUALIFIED: that is not an oversight.
-    `EXECUTE_AI_EVALUATION` resolves the agent from the session's database and
-    schema and ignores a fully-qualified name here. The materialization sets
-    session context explicitly before calling, so this resolves to the agent built
-    by this same dbt run — including inside a per-pull-request schema, which is
-    what makes the gate grade the pull request's agent rather than production's.
+    EVERY NAME BELOW IS FULLY QUALIFIED, and that is a correction rather than a
+    preference. Both the agent and the dataset are documented as resolving relative
+    to the session's database and schema, so the first attempt set session context
+    explicitly with `use schema` and left the names bare.
+
+    That does not survive Snowflake-native dbt. Each statement the materialization
+    issues gets its own context, so the `use schema` had no effect on the later
+    call and resolution fell back to the profile's schema:
+
+        Failed to validate query_text: Schema 'CINDER_ANALYTICS.PUBLIC'
+        does not exist or not authorized
+
+    which is doubly confusing because it blames query_text for a schema problem,
+    and because the dataset had in fact been created — just in the pull request's
+    schema, while the lookup went to PUBLIC. The documentation permits a fully
+    qualified name for the agent, so use one, and derive both from `this` so the
+    same code works in production and inside a per-pull-request schema.
+
+    The materialization still sets session context. It is now belt and braces
+    rather than the mechanism.
 --------------------------------------------------------------------------- -#}
-{%- do ref('agent_cinder_moderation') -%}
 {%- do ref('eval_questions_cinder') -%}
 
 evaluation:
   agent_params:
-    agent_name: "agent_cinder_moderation"
+    agent_name: "{{ this.database }}.{{ this.schema }}.{{ ref('agent_cinder_moderation').identifier }}"
     agent_type: "CORTEX AGENT"
   run_params:
     label: "cinder moderation gate"
     description: "Automated evaluation of the Cinder moderation agent, run from dbt."
   source_metadata:
     type: "dataset"
-    dataset_name: "CINDER_AGENT_EVAL_SET"
+    dataset_name: "{{ this.database }}.{{ this.schema }}.CINDER_AGENT_EVAL_SET"
 
 metrics:
   - "answer_correctness"
