@@ -245,7 +245,7 @@
                         agent failed. Surface it immediately with the message. -#}
                     {%- set errs = run_query(
                         "select left(coalesce(max(value::string), ''), 900) as msg, count(*) as n "
-                        ~ "from table(" ~ agent_db ~ ".snowflake.local.get_ai_observability_logs('"
+                        ~ "from table(snowflake.local.get_ai_observability_logs('"
                         ~ agent_db ~ "','" ~ agent_schema ~ "','" ~ agent_ident ~ "','CORTEX AGENT')) "
                         ~ "where record:\"severity_text\"::string = 'ERROR' "
                         ~ "and record_attributes:\"snow.ai.observability.run.name\"::string = '"
@@ -268,7 +268,7 @@
 
                     {%- set scored = run_query(
                         "select count(*) as n from table("
-                        ~ agent_db ~ ".snowflake.local.get_ai_evaluation_data('"
+                        ~ "snowflake.local.get_ai_evaluation_data('"
                         ~ agent_db ~ "','" ~ agent_schema ~ "','" ~ agent_ident
                         ~ "','CORTEX AGENT','" ~ run_name ~ "')) where eval_agg_score is not null"
                     ) -%}

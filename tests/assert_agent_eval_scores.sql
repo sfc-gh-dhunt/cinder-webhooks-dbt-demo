@@ -121,7 +121,7 @@ with current_scores as (
         input,
         metric_name,
         eval_agg_score
-    from table({{ agent_db }}.snowflake.local.get_ai_evaluation_data(
+    from table(snowflake.local.get_ai_evaluation_data(
         '{{ agent_db }}',
         '{{ agent_schema }}',
         '{{ agent_name }}',
@@ -139,7 +139,7 @@ baseline_scores as (
         input,
         metric_name,
         eval_agg_score
-    from table({{ agent_db }}.snowflake.local.get_ai_evaluation_data(
+    from table(snowflake.local.get_ai_evaluation_data(
         '{{ agent_db }}',
         '{{ agent_schema }}',
         '{{ agent_name }}',
