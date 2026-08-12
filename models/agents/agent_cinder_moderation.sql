@@ -83,12 +83,20 @@ instructions:
     If the data cannot answer the question, say what is missing rather than
     substituting a proxy.
 
+  {#- SAMPLE QUESTIONS ARE OBJECTS, NOT STRINGS, and the failure if you get this
+      wrong tells you nothing useful. A bare list of strings here is rejected with:
+
+          399510 (22023): Operation failed since agent spec is invalid.
+
+      which names neither the key nor the reason, and arrives from CREATE AGENT
+      rather than from any YAML parse — so it reads like the whole spec is broken.
+      Verified by bisecting the spec down to this one key. -#}
   sample_questions:
-    - "What is the automation rate this month, and how has it moved?"
-    - "Which queues have the longest median handle time?"
-    - "Show the policy distribution for violating outcomes, as a share of decisions."
-    - "How many jobs were escalated before closing, and who escalated them?"
-    - "Which moderators handled the most jobs last week?"
+    - question: "What is the automation rate this month, and how has it moved?"
+    - question: "Which queues have the longest median handle time?"
+    - question: "Show the policy distribution for violating outcomes, as a share of decisions."
+    - question: "How many jobs were escalated before closing, and who escalated them?"
+    - question: "Which moderators handled the most jobs last week?"
 
 tools:
   - tool_spec:
