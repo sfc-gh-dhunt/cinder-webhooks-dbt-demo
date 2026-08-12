@@ -213,93 +213,87 @@
                 ~ run_name ~ "'), '@" ~ stage_fqn ~ "/" ~ config_file ~ "')"
             ) -%}
 
-            {#- Step 5 — wait for a genuinely terminal state. See note 4. -#}
-            {%- set ns = namespace(done=false, final='UNKNOWN') -%}
+            {#- Step 5 - wait for the scores to exist.
+
+                THIS DELIBERATELY DOES NOT PARSE THE `STATUS` CALL, and that is the
+                third attempt at this. `EXECUTE_AI_EVALUATION('STATUS', ...)` returns
+                a table with a STATUS column when run in a worksheet, but what
+                `run_query` hands back for a CALL inside Snowflake-native dbt is not
+                dependable: two runs finished in two minutes, reached COMPLETED, and
+                were polled for the full fifteen-minute budget anyway before being
+                reported as timeouts. Neither casing normalisation nor logging fixed
+                it, because the row was not there to read.
+
+                So poll the thing the gate actually needs instead. Scores are a plain
+                table function, selectable like any other relation, and their presence
+                IS completion as far as the next test is concerned. No proxy, no
+                parsing, nothing to get wrong.
+
+                Errors still fail fast, read from the observability log rather than
+                from STATUS_DETAILS - same reasoning, it is a selectable relation.
+                Necessary because a run whose agent invocations all fail may never
+                reach a terminal status at all. -#}
+            {%- set agent_db = config.get('agent_database', this.database) -%}
+            {%- set agent_schema = config.get('agent_schema', this.schema) -%}
+            {%- set agent_ident = config.get('agent_name', '') -%}
+
+            {%- set ns = namespace(done=false, scored=0) -%}
             {%- for attempt in range(poll_attempts) -%}
                 {%- if not ns.done -%}
-                    {%- set status = run_query(
-                        "call execute_ai_evaluation('STATUS', object_construct('run_name', '"
-                        ~ run_name ~ "'), '@" ~ stage_fqn ~ "/" ~ config_file ~ "')"
+
+                    {#- Any ERROR logged against this run means the harness or the
+                        agent failed. Surface it immediately with the message. -#}
+                    {%- set errs = run_query(
+                        "select left(coalesce(max(value::string), ''), 900) as msg, count(*) as n "
+                        ~ "from table(" ~ agent_db ~ ".snowflake.local.get_ai_observability_logs('"
+                        ~ agent_db ~ "','" ~ agent_schema ~ "','" ~ agent_ident ~ "','CORTEX AGENT')) "
+                        ~ "where record:\"severity_text\"::string = 'ERROR' "
+                        ~ "and record_attributes:\"snow.ai.observability.run.name\"::string = '"
+                        ~ run_name ~ "'"
                     ) -%}
-                    {#- COLUMN NAMES MATCHED CASE-INSENSITIVELY, and this is not
-                        defensive padding. The first successful run cost twenty
-                        minutes to exactly this: the evaluation finished in two and
-                        reached COMPLETED, the loop never noticed because the key
-                        lookup did not match the casing the adapter returned, and it
-                        polled a finished run for its whole budget before reporting a
-                        timeout — the least informative outcome available, for a run
-                        that had succeeded.
+                    {%- set err_count = 0 -%}
+                    {%- set err_msg = '' -%}
+                    {%- if errs and errs.rows | length > 0 -%}
+                        {%- set err_msg = errs.rows[0][0] | string -%}
+                        {%- set err_count = errs.rows[0][1] | int -%}
+                    {%- endif -%}
 
-                        The observed state is logged every poll for the same reason:
-                        if this stalls again, the log says what it was looking at. -#}
-                    {%- set colmap = {} -%}
-                    {%- for cname in status.column_names -%}
-                        {%- do colmap.update({cname | lower: cname}) -%}
-                    {%- endfor -%}
-
-                    {%- set state = 'UNKNOWN' -%}
-                    {%- set details = '' -%}
-                    {%- for row in status -%}
-                        {%- if 'status' in colmap -%}
-                            {%- set state = row[colmap['status']] | string | upper -%}
-                        {%- endif -%}
-                        {%- if 'status_details' in colmap -%}
-                            {%- set details = row[colmap['status_details']] | string -%}
-                        {%- endif -%}
-                    {%- endfor -%}
-
-                    {%- do log("Evaluation " ~ run_name ~ " state: " ~ state, info=true) -%}
-
-                    {#- FAIL FAST ON A REPORTED ERROR. `STATUS_DETAILS` carries the
-                        run's error messages, and a run whose agent invocations all
-                        failed does NOT necessarily reach a terminal status \u2014 the
-                        first time this happened the loop polled a dead run for the
-                        full fifteen-minute budget and then reported a timeout, which
-                        says nothing about the cause. The real error was sitting in
-                        this field the whole time.
-
-                        Surfacing it here turns fifteen minutes and a shrug into
-                        seconds and a diagnosis. -#}
-                    {%- if details and details | trim not in ['[]', 'None', '', 'null'] -%}
+                    {%- if err_count > 0 -%}
                         {%- do exceptions.raise_compiler_error(
-                            "Evaluation run " ~ run_name ~ " reported errors (status "
-                            ~ state ~ "): " ~ details
-                            ~ " -- this is a harness or agent failure, not a score failure."
+                            "Evaluation run " ~ run_name ~ " logged " ~ err_count
+                            ~ " error(s). This is a harness or agent failure, not a score "
+                            ~ "failure. First: " ~ err_msg
                         ) -%}
                     {%- endif -%}
 
-                    {%- if state in ['COMPLETED', 'PARTIALLY_COMPLETED', 'CANCELLED'] -%}
+                    {%- set scored = run_query(
+                        "select count(*) as n from table("
+                        ~ agent_db ~ ".snowflake.local.get_ai_evaluation_data('"
+                        ~ agent_db ~ "','" ~ agent_schema ~ "','" ~ agent_ident
+                        ~ "','CORTEX AGENT','" ~ run_name ~ "')) where eval_agg_score is not null"
+                    ) -%}
+                    {%- set n = 0 -%}
+                    {%- if scored and scored.rows | length > 0 -%}
+                        {%- set n = scored.rows[0][0] | int -%}
+                    {%- endif -%}
+
+                    {%- if n > 0 -%}
                         {%- set ns.done = true -%}
-                        {%- set ns.final = state -%}
+                        {%- set ns.scored = n -%}
                     {%- else -%}
                         {%- do run_query("select system$wait(" ~ poll_seconds ~ ")") -%}
                     {%- endif -%}
                 {%- endif -%}
             {%- endfor -%}
 
-            {#- A harness failure is NOT a quality failure, and conflating them
-                makes a red build unreadable. Raise on CANCELLED and on timeout,
-                so the pipeline says "the eval did not run" rather than letting
-                the grading test report "the agent is bad" on no data. -#}
-            {%- if ns.final == 'CANCELLED' -%}
+            {%- if not ns.done -%}
                 {%- do exceptions.raise_compiler_error(
-                    "Evaluation run " ~ run_name ~ " was CANCELLED. Harness failure, not a score failure."
-                ) -%}
-            {%- elif not ns.done -%}
-                {%- do exceptions.raise_compiler_error(
-                    "Evaluation run " ~ run_name ~ " did not reach a terminal state within "
-                    ~ (poll_seconds * poll_attempts) ~ "s. Raise poll_attempts, or inspect the run in Snowsight."
-                ) -%}
-            {%- elif ns.final == 'PARTIALLY_COMPLETED' -%}
-                {#- Some records scored, some did not. Deliberately NOT a raise:
-                    the grading test can still judge what landed, and failing here
-                    would turn a partial judge outage into a red build with no
-                    scores to look at. Loud log; the test decides. -#}
-                {%- do log(
-                    "WARNING: run " ~ run_name ~ " is PARTIALLY_COMPLETED — some records did not "
-                    ~ "score. Grading will proceed on a partial result set.", info=true
+                    "Evaluation run " ~ run_name ~ " produced no scores within "
+                    ~ (poll_seconds * poll_attempts) ~ "s and logged no errors. Inspect the run "
+                    ~ "in Snowsight, or raise poll_attempts."
                 ) -%}
             {%- endif -%}
+
 
             {#- Step 6 — record which run this was, so the grading test does not
                 have to guess. Guessing picks up another pull request's run. -#}
@@ -316,11 +310,11 @@
                 ~ "'" ~ config.get('agent_database', this.database) ~ "', "
                 ~ "'" ~ config.get('agent_schema', this.schema) ~ "', "
                 ~ "'" ~ config.get('agent_name', '') ~ "', "
-                ~ "'" ~ ns.final ~ "', "
+                ~ "'SCORED:" ~ ns.scored ~ "', "
                 ~ "'" ~ invocation_id ~ "', current_timestamp()::timestamp_ntz"
             ) -%}
 
-            {%- do log("Evaluation run " ~ run_name ~ " finished: " ~ ns.final, info=true) -%}
+            {%- do log("Evaluation run " ~ run_name ~ " scored " ~ ns.scored ~ " records", info=true) -%}
 
         {%- endif -%}
 
