@@ -89,7 +89,7 @@
     CONFIG
       materialized='cortex_agent_evaluation'  required
       dataset_name='...'                      required; schema-level object name
-      eval_source_table='<fqn>'               required until the dataset exists
+      eval_source_model='<model name>'         required until the dataset exists
       query_column='query_text'               optional
       ground_truth_column='ground_truth'      optional
       eval_stage='<db>.<schema>.<stage>'      optional; created if absent
@@ -113,7 +113,18 @@
     {%- set run_prefix = config.get('run_name_prefix', model.name) -%}
     {%- set poll_seconds = config.get('poll_seconds', 15) -%}
     {%- set poll_attempts = config.get('poll_attempts', 40) -%}
-    {%- set source_table = config.get('eval_source_table', none) -%}
+    {%- set source_model = config.get('eval_source_model', none) -%}
+    {#- Resolved HERE, not in the model's config block. `ref()` inside `config()` does
+        not resolve to the referenced relation — it yielded the calling model's own
+        relation instead, so the dataset was pointed at the evaluation model:
+
+            Object 'CINDER_ANALYTICS.PR6_SEMANTIC.EVAL_CINDER_MODERATION'
+            does not exist or not authorized
+
+        Stringifying it did not help either; it has to be resolved in the
+        materialization, where ref() behaves. The model body still carries a
+        `do ref()` for the DAG edge. -#}
+    {%- set source_table = ref(source_model) if source_model else none -%}
     {%- set dataset_name = config.get('dataset_name', none) -%}
     {%- set query_column = config.get('query_column', 'query_text') -%}
     {%- set gt_column = config.get('ground_truth_column', 'ground_truth') -%}
@@ -149,7 +160,7 @@
         {%- if existing_ds | length == 0 -%}
             {%- if source_table is none -%}
                 {%- do exceptions.raise_compiler_error(
-                    "Dataset '" ~ dataset_name ~ "' does not exist and no eval_source_table "
+                    "Dataset '" ~ dataset_name ~ "' does not exist and no eval_source_model "
                     ~ "is configured on '" ~ model.name ~ "', so it cannot be created."
                 ) -%}
             {%- endif -%}

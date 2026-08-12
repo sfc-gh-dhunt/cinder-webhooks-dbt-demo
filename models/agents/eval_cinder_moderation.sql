@@ -3,7 +3,7 @@
         materialized='cortex_agent_evaluation',
         schema='SEMANTIC',
         dataset_name='CINDER_AGENT_EVAL_SET',
-        eval_source_table=ref('eval_questions_cinder') | string,
+        eval_source_model='eval_questions_cinder',
         agent_name='agent_cinder_moderation',
         run_name_prefix='cinder_moderation_pr',
         poll_seconds=15,
