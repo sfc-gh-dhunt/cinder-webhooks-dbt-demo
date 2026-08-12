@@ -50,6 +50,33 @@
     silently breaks the implicit "newest version is served" behaviour. The
     materialization re-asserts DEFAULT_VERSION on every run specifically to heal
     that, but the spec edit itself is lost. Git is the source of truth.
+
+    ---------------------------------------------------------------------------
+    NO JINJA COMMENTS INSIDE THE YAML BLOCK BELOW, and this one bites silently.
+
+    A Jinja comment whose delimiters carry the whitespace-trim marker eats the
+    newline and indentation around it,
+    so a comment sitting above a key welds that key onto the previous line. Where
+    the previous line is inside a block scalar — as `instructions.response` is —
+    the key simply becomes more prose and DISAPPEARS. No error: the spec is still
+    valid YAML, just missing something. Above `tool_resources.semantic_view` that
+    would produce a syntactically perfect agent with no semantic view attached,
+    which is the exact failure mode the rest of this file is built to prevent.
+
+    So all commentary lives up here, and the YAML below stays bare.
+
+    TWO THINGS IN THE YAML THAT LOOK ARBITRARY AND ARE NOT:
+
+    * `instructions.sample_questions` entries must be OBJECTS (`- question: ".."`),
+      not bare strings. A list of strings is rejected with
+      "399510: Operation failed since agent spec is invalid", which names neither
+      the key nor the reason and comes from CREATE AGENT rather than from a YAML
+      parse — so it reads as though the whole spec is broken. Found by bisection.
+
+    * `tool_resources.cinder_moderation.semantic_view` is the load-bearing line:
+      the `ref()` resolves to the fully-qualified name AND creates the DAG edge
+      that orders this agent after the semantic view. The key must match the tool
+      name in `tools[].tool_spec.name`.
 -#}
 
 models:
@@ -83,14 +110,6 @@ instructions:
     If the data cannot answer the question, say what is missing rather than
     substituting a proxy.
 
-  {#- SAMPLE QUESTIONS ARE OBJECTS, NOT STRINGS, and the failure if you get this
-      wrong tells you nothing useful. A bare list of strings here is rejected with:
-
-          399510 (22023): Operation failed since agent spec is invalid.
-
-      which names neither the key nor the reason, and arrives from CREATE AGENT
-      rather than from any YAML parse — so it reads like the whole spec is broken.
-      Verified by bisecting the spec down to this one key. -#}
   sample_questions:
     - question: "What is the automation rate this month, and how has it moved?"
     - question: "Which queues have the longest median handle time?"
@@ -111,5 +130,4 @@ tools:
 
 tool_resources:
   cinder_moderation:
-    {#- The load-bearing line. Resolves to the FQN and creates the DAG edge. -#}
     semantic_view: {{ ref('sem_cinder_moderation') }}

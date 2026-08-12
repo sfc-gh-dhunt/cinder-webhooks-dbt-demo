@@ -106,6 +106,28 @@ jobs:
           DBT_PROFILES_DIR: ${{ github.workspace }}/.github/ci-profiles
         run: dbt parse --no-partial-parse
 
+      - name: Check the agent specs render
+        # WHY THIS IS A SEPARATE CHECK rather than something dbt catches.
+        #
+        # The agent and evaluation model bodies are whitespace-sensitive YAML. A Jinja
+        # comment carrying the trim marker deletes the newline and indentation around
+        # itself, which welds the following key onto the previous line. When the previous
+        # line sits inside a block scalar the key becomes prose and DISAPPEARS — leaving
+        # valid YAML that is missing something.
+        #
+        # Nothing downstream notices. `dbt parse` passes, CREATE AGENT succeeds, and the
+        # agent comes up with no semantic view attached and answers from the model's own
+        # knowledge instead of from data. Both failures in this area so far were of this
+        # shape, and one of them was a comment that closed itself early by quoting its own
+        # delimiter, which leaked an entire docstring into the spec.
+        #
+        # So the rendered structure is asserted directly: required keys survive,
+        # sample_questions entries are objects rather than strings, and every
+        # tool_resources key matches a declared tool name.
+        run: |
+          pip install jinja2 pyyaml
+          python3 scripts/check_agent_spec_renders.py
+
       - name: Check for private references
         # This repo is meant to be shareable. A customer name or account identifier committed
         # once is in the history for good, so it is checked mechanically.

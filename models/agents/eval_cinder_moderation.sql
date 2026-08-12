@@ -87,18 +87,33 @@
     the wrong artifact is worse than no gate.
 
     `do ref(...)` registers the dependency and emits nothing into the YAML.
+
+    ---------------------------------------------------------------------------
+    NO JINJA COMMENTS INSIDE THE YAML BLOCK BELOW. This body is whitespace-
+    sensitive YAML, and a Jinja comment whose delimiters carry the whitespace-trim
+    marker eats the newline and
+    indentation around it — which silently welds two keys together:
+
+        agent_params:agent_name: "agent_cinder_moderation"
+
+    The resulting error arrives from inside EXECUTE_AI_EVALUATION as a YAML block
+    mapping complaint about a line number that does not correspond to anything in
+    this file, because it refers to the RENDERED string. It cost a CI round trip.
+
+    So all commentary lives up here, and the YAML below stays bare.
+
+    ON `agent_name` BEING UNQUALIFIED: that is not an oversight.
+    `EXECUTE_AI_EVALUATION` resolves the agent from the session's database and
+    schema and ignores a fully-qualified name here. The materialization sets
+    session context explicitly before calling, so this resolves to the agent built
+    by this same dbt run — including inside a per-pull-request schema, which is
+    what makes the gate grade the pull request's agent rather than production's.
 --------------------------------------------------------------------------- -#}
 {%- do ref('agent_cinder_moderation') -%}
 {%- do ref('eval_questions_cinder') -%}
 
 evaluation:
   agent_params:
-    {#- UNQUALIFIED, and that is not an oversight. `EXECUTE_AI_EVALUATION`
-        resolves the agent from the session's database and schema and ignores a
-        fully-qualified name here. The materialization sets session context
-        explicitly before calling, so this resolves to the agent built by this
-        same dbt run — including inside a per-PR schema, which is what makes the
-        gate test the pull request's agent rather than production's. -#}
     agent_name: "agent_cinder_moderation"
     agent_type: "CORTEX AGENT"
   run_params:
