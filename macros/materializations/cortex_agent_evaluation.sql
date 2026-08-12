@@ -221,20 +221,34 @@
                         "call execute_ai_evaluation('STATUS', object_construct('run_name', '"
                         ~ run_name ~ "'), '@" ~ stage_fqn ~ "/" ~ config_file ~ "')"
                     ) -%}
+                    {#- COLUMN NAMES MATCHED CASE-INSENSITIVELY, and this is not
+                        defensive padding. The first successful run cost twenty
+                        minutes to exactly this: the evaluation finished in two and
+                        reached COMPLETED, the loop never noticed because the key
+                        lookup did not match the casing the adapter returned, and it
+                        polled a finished run for its whole budget before reporting a
+                        timeout — the least informative outcome available, for a run
+                        that had succeeded.
+
+                        The observed state is logged every poll for the same reason:
+                        if this stalls again, the log says what it was looking at. -#}
+                    {%- set colmap = {} -%}
+                    {%- for cname in status.column_names -%}
+                        {%- do colmap.update({cname | lower: cname}) -%}
+                    {%- endfor -%}
+
                     {%- set state = 'UNKNOWN' -%}
                     {%- set details = '' -%}
                     {%- for row in status -%}
-                        {%- if 'STATUS' in status.column_names -%}
-                            {%- set state = row['STATUS'] | string | upper -%}
-                        {%- elif 'status' in status.column_names -%}
-                            {%- set state = row['status'] | string | upper -%}
+                        {%- if 'status' in colmap -%}
+                            {%- set state = row[colmap['status']] | string | upper -%}
                         {%- endif -%}
-                        {%- if 'STATUS_DETAILS' in status.column_names -%}
-                            {%- set details = row['STATUS_DETAILS'] | string -%}
-                        {%- elif 'status_details' in status.column_names -%}
-                            {%- set details = row['status_details'] | string -%}
+                        {%- if 'status_details' in colmap -%}
+                            {%- set details = row[colmap['status_details']] | string -%}
                         {%- endif -%}
                     {%- endfor -%}
+
+                    {%- do log("Evaluation " ~ run_name ~ " state: " ~ state, info=true) -%}
 
                     {#- FAIL FAST ON A REPORTED ERROR. `STATUS_DETAILS` carries the
                         run's error messages, and a run whose agent invocations all
@@ -246,7 +260,7 @@
 
                         Surfacing it here turns fifteen minutes and a shrug into
                         seconds and a diagnosis. -#}
-                    {%- if details and details not in ['[]', 'None', ''] -%}
+                    {%- if details and details | trim not in ['[]', 'None', '', 'null'] -%}
                         {%- do exceptions.raise_compiler_error(
                             "Evaluation run " ~ run_name ~ " reported errors (status "
                             ~ state ~ "): " ~ details
