@@ -222,13 +222,37 @@
                         ~ run_name ~ "'), '@" ~ stage_fqn ~ "/" ~ config_file ~ "')"
                     ) -%}
                     {%- set state = 'UNKNOWN' -%}
+                    {%- set details = '' -%}
                     {%- for row in status -%}
                         {%- if 'STATUS' in status.column_names -%}
                             {%- set state = row['STATUS'] | string | upper -%}
                         {%- elif 'status' in status.column_names -%}
                             {%- set state = row['status'] | string | upper -%}
                         {%- endif -%}
+                        {%- if 'STATUS_DETAILS' in status.column_names -%}
+                            {%- set details = row['STATUS_DETAILS'] | string -%}
+                        {%- elif 'status_details' in status.column_names -%}
+                            {%- set details = row['status_details'] | string -%}
+                        {%- endif -%}
                     {%- endfor -%}
+
+                    {#- FAIL FAST ON A REPORTED ERROR. `STATUS_DETAILS` carries the
+                        run's error messages, and a run whose agent invocations all
+                        failed does NOT necessarily reach a terminal status \u2014 the
+                        first time this happened the loop polled a dead run for the
+                        full fifteen-minute budget and then reported a timeout, which
+                        says nothing about the cause. The real error was sitting in
+                        this field the whole time.
+
+                        Surfacing it here turns fifteen minutes and a shrug into
+                        seconds and a diagnosis. -#}
+                    {%- if details and details not in ['[]', 'None', ''] -%}
+                        {%- do exceptions.raise_compiler_error(
+                            "Evaluation run " ~ run_name ~ " reported errors (status "
+                            ~ state ~ "): " ~ details
+                            ~ " -- this is a harness or agent failure, not a score failure."
+                        ) -%}
+                    {%- endif -%}
 
                     {%- if state in ['COMPLETED', 'PARTIALLY_COMPLETED', 'CANCELLED'] -%}
                         {%- set ns.done = true -%}

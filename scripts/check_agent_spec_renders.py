@@ -18,6 +18,11 @@ CASES = {
         ("instructions", "sample_questions"),
         ("tools",),
         ("tool_resources", "cinder_moderation", "semantic_view"),
+        # A Cortex Analyst tool without an execution environment is accepted by
+        # CREATE AGENT and works interactively, because the session supplies a
+        # warehouse. It fails only when something invokes the agent with no session
+        # of its own — an evaluation — with 399504 reported as an ingestion error.
+        ("tool_resources", "cinder_moderation", "execution_environment", "warehouse"),
     ],
     "models/agents/eval_cinder_moderation.sql": [
         ("evaluation", "agent_params", "agent_name"),

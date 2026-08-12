@@ -77,6 +77,20 @@
       the `ref()` resolves to the fully-qualified name AND creates the DAG edge
       that orders this agent after the semantic view. The key must match the tool
       name in `tools[].tool_spec.name`.
+
+    * `execution_environment` IS NOT OPTIONAL for a Cortex Analyst tool, and its
+      absence does not surface at CREATE AGENT. The spec is accepted, the agent
+      exists, and it is fine when a human uses it interactively because the session
+      supplies a warehouse. It fails when something invokes the agent with no
+      session of its own — which is exactly what an evaluation does:
+
+          399504: The Analyst tool cinder_moderation is missing an execution
+          environment. Please specify a warehouse name in its tool_resources
+
+      In CI that arrived as 8 of 8 evaluation queries failing, reported as an
+      ingestion error rather than as a spec problem. So a valid agent that works by
+      hand can still be ungradeable, which is the sort of gap a gate exists to
+      catch and this one nearly missed.
 -#}
 
 models:
@@ -131,3 +145,7 @@ tools:
 tool_resources:
   cinder_moderation:
     semantic_view: {{ ref('sem_cinder_moderation') }}
+    execution_environment:
+      type: "warehouse"
+      warehouse: "{{ var('cinder_agent_warehouse', 'CINDER_DEMO_WH') }}"
+      query_timeout: 120
