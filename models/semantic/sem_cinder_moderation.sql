@@ -25,6 +25,20 @@
     about `reviewer_email`; they ask about moderators. The synonyms below are the vocabulary
     a Trust & Safety team actually uses, which is the difference between Cortex Analyst
     answering the question and Cortex Analyst asking what you meant.
+
+    COMMENTS ARE NOT WRITTEN HERE. Every table, fact and dimension comment below is pulled
+    from the dbt documentation for the mart column it exposes, via col_comment() and
+    model_comment() in macros/semantic/doc_comment.sql. They were previously hard-coded,
+    which meant every column was documented twice with nothing keeping the two copies in
+    step — and a semantic view describing last month's version of a column is worse than one
+    describing nothing, because Analyst treats the comment as authoritative.
+
+    The practical consequence: to change what Analyst is told about a column, edit
+    models/marts/schema.yml. Definitions needed in more than one place live in
+    models/marts/_column_definitions.md as doc blocks and are referenced with doc(); dbt
+    renders those into the manifest before this model is built, so they arrive here already
+    resolved. Renaming a mart column without updating this file now fails the build rather
+    than silently blanking a comment.
 */
 
 TABLES (
@@ -34,47 +48,47 @@ TABLES (
     jobs AS {{ ref('fct_jobs') }}
         PRIMARY KEY (job_key)
         WITH SYNONYMS = ('jobs', 'review jobs', 'moderation jobs', 'tasks', 'cases')
-        COMMENT = 'One row per moderation job, whether or not it has closed',
+        COMMENT = '{{ model_comment('fct_jobs') }}',
 
     -- One row per decision on a closed job.
     decisions AS {{ ref('fct_decisions') }}
         PRIMARY KEY (decision_sk)
         WITH SYNONYMS = ('decisions', 'moderation decisions', 'verdicts', 'outcomes')
-        COMMENT = 'One row per decision recorded on a closed job',
+        COMMENT = '{{ model_comment('fct_decisions') }}',
 
     -- One row per decision per applied policy.
     decision_policies AS {{ ref('fct_decision_policies') }}
         PRIMARY KEY (decision_policy_sk)
         WITH SYNONYMS = ('policy applications', 'policy violations', 'applied policies')
-        COMMENT = 'One row per decision per applied policy — the grain for policy distribution',
+        COMMENT = '{{ model_comment('fct_decision_policies') }}',
 
     -- One row per job lifecycle movement.
     job_actions AS {{ ref('fct_job_actions') }}
         PRIMARY KEY (job_action_event_sk)
         WITH SYNONYMS = ('job actions', 'queue movements', 'job activity', 'moderator activity')
-        COMMENT = 'One row per job lifecycle movement — escalations, queue changes, skips',
+        COMMENT = '{{ model_comment('fct_job_actions') }}',
 
     queues AS {{ ref('dim_queue') }}
         PRIMARY KEY (queue_key)
         UNIQUE (queue_slug)
         WITH SYNONYMS = ('queues', 'review queues', 'inboxes', 'work queues')
-        COMMENT = 'Review queues, observed from activity',
+        COMMENT = '{{ model_comment('dim_queue') }}',
 
     policies AS {{ ref('dim_policy') }}
         PRIMARY KEY (policy_key)
         WITH SYNONYMS = ('policies', 'violation types', 'rules', 'policy tree')
-        COMMENT = 'Moderation policies with parent hierarchy',
+        COMMENT = '{{ model_comment('dim_policy') }}',
 
     reviewers AS {{ ref('dim_reviewer') }}
         PRIMARY KEY (reviewer_key)
         UNIQUE (reviewer_email)
         WITH SYNONYMS = ('moderators', 'reviewers', 'agents', 'analysts', 'staff')
-        COMMENT = 'Human moderators. Automated decisions have no reviewer by design',
+        COMMENT = '{{ model_comment('dim_reviewer') }}',
 
     entities AS {{ ref('dim_entity') }}
         PRIMARY KEY (entity_key)
         WITH SYNONYMS = ('entities', 'content', 'items', 'objects under review')
-        COMMENT = 'Entities under review — accounts, posts, images and other schemas'
+        COMMENT = '{{ model_comment('dim_entity') }}'
 
 )
 
@@ -105,21 +119,37 @@ FACTS (
 
     -- Row-level values that metrics aggregate. Declared as facts rather than dimensions so
     -- Cortex Analyst does not offer to group by a duration.
-    jobs.job_time_to_close_hours AS jobs.time_to_close_hours,
-    jobs.job_handle_time_hours AS jobs.handle_time_hours,
-    jobs.job_queue_changes AS jobs.queue_change_count,
-    jobs.job_actions_taken AS jobs.action_count,
-    jobs.job_decisions_taken AS jobs.decision_count,
-    jobs.job_wait_time_hours AS jobs.time_to_first_action_seconds / 3600.0,
-    jobs.job_post_decision_lag_hours AS jobs.decision_to_close_seconds / 3600.0,
+    --
+    -- The two ratio facts convert seconds to hours in the expression, so their comments come
+    -- from the seconds column they are derived from. That is the column the definition lives
+    -- on; the fact name carries the unit.
+    jobs.job_time_to_close_hours AS jobs.time_to_close_hours
+        COMMENT = '{{ col_comment('fct_jobs', 'time_to_close_hours') }}',
+    jobs.job_handle_time_hours AS jobs.handle_time_hours
+        COMMENT = '{{ col_comment('fct_jobs', 'handle_time_hours') }}',
+    jobs.job_queue_changes AS jobs.queue_change_count
+        COMMENT = '{{ col_comment('fct_jobs', 'queue_change_count') }}',
+    jobs.job_actions_taken AS jobs.action_count
+        COMMENT = '{{ col_comment('fct_jobs', 'action_count') }}',
+    jobs.job_decisions_taken AS jobs.decision_count
+        COMMENT = '{{ col_comment('fct_jobs', 'decision_count') }}',
+    jobs.job_wait_time_hours AS jobs.time_to_first_action_seconds / 3600.0
+        COMMENT = '{{ col_comment('fct_jobs', 'time_to_first_action_seconds') }}',
+    jobs.job_post_decision_lag_hours AS jobs.decision_to_close_seconds / 3600.0
+        COMMENT = '{{ col_comment('fct_jobs', 'decision_to_close_seconds') }}',
 
-    decisions.decision_handle_time_hours AS decisions.handle_time_hours,
-    decisions.decision_enforcement_actions AS decisions.enforcement_action_count,
-    decisions.decision_policies_applied AS decisions.policy_count,
+    decisions.decision_handle_time_hours AS decisions.handle_time_hours
+        COMMENT = '{{ col_comment('fct_decisions', 'handle_time_hours') }}',
+    decisions.decision_enforcement_actions AS decisions.enforcement_action_count
+        COMMENT = '{{ col_comment('fct_decisions', 'enforcement_action_count') }}',
+    decisions.decision_policies_applied AS decisions.policy_count
+        COMMENT = '{{ col_comment('fct_decisions', 'policy_count') }}',
 
-    job_actions.action_job_age_hours AS job_actions.job_age_at_action_hours,
+    job_actions.action_job_age_hours AS job_actions.job_age_at_action_hours
+        COMMENT = '{{ col_comment('fct_job_actions', 'job_age_at_action_hours') }}',
 
     decision_policies.policy_allocated_decisions AS decision_policies.decision_count_allocated
+        COMMENT = '{{ col_comment('fct_decision_policies', 'decision_count_allocated') }}'
 
 )
 
@@ -128,115 +158,135 @@ DIMENSIONS (
     -- ---- Queue ---------------------------------------------------------------------
     queues.queue_name AS queues.queue_name
         WITH SYNONYMS = ('queue', 'queue name', 'inbox', 'review queue')
-        COMMENT = 'Readable queue name',
+        COMMENT = '{{ col_comment('dim_queue', 'queue_name') }}',
     queues.queue_slug AS queues.queue_slug
         WITH SYNONYMS = ('queue slug', 'queue id')
-        COMMENT = 'Queue identifier as it appears in Cinder',
+        COMMENT = '{{ col_comment('dim_queue', 'queue_slug') }}',
     queues.queue_is_multi_review AS queues.queue_is_multi_review
         WITH SYNONYMS = ('multi review queue', 'requires multiple reviews', 'double review')
-        COMMENT = 'Whether the queue requires more than one review',
+        COMMENT = '{{ col_comment('dim_queue', 'queue_is_multi_review') }}',
 
     -- ---- Policy --------------------------------------------------------------------
     policies.policy_name AS policies.policy_name
         WITH SYNONYMS = ('policy', 'policy name', 'violation', 'violation type', 'rule')
-        COMMENT = 'Specific policy applied',
+        COMMENT = '{{ col_comment('dim_policy', 'policy_name') }}',
     policies.policy_area AS policies.policy_group_name
         WITH SYNONYMS = ('policy area', 'policy group', 'parent policy', 'policy category', 'harm area')
-        COMMENT = 'Parent policy area. Prefer this over policy name for distribution — leaf-level policies fragment into unreadably thin slices',
+        COMMENT = '{{ col_comment('dim_policy', 'policy_group_name') }}',
     policies.policy_severity_class AS policies.policy_severity_class
         WITH SYNONYMS = ('severity', 'policy severity', 'illegal or violating', 'harm class')
-        COMMENT = 'One of illegal, violating, non_violating. A non-violating policy records a reviewed-and-cleared outcome, not a violation',
+        COMMENT = '{{ col_comment('dim_policy', 'policy_severity_class') }}',
     policies.policy_is_illegal AS policies.policy_is_illegal
         WITH SYNONYMS = ('illegal', 'illegal content', 'legally reportable')
-        COMMENT = 'Whether the policy covers illegal content',
+        COMMENT = '{{ col_comment('dim_policy', 'policy_is_illegal') }}',
 
     -- ---- Moderator -----------------------------------------------------------------
     reviewers.moderator_name AS reviewers.reviewer_name
         WITH SYNONYMS = ('moderator', 'moderator name', 'reviewer', 'agent', 'who decided')
-        COMMENT = 'Moderator display name',
+        COMMENT = '{{ col_comment('dim_reviewer', 'reviewer_name') }}',
     reviewers.moderator_email AS reviewers.reviewer_email
         WITH SYNONYMS = ('moderator email', 'reviewer email', 'agent email')
-        COMMENT = 'Moderator email — the business key, since the webhooks carry no user id',
+        COMMENT = '{{ col_comment('dim_reviewer', 'reviewer_email') }}',
     reviewers.staffing_model AS reviewers.staffing_model
         WITH SYNONYMS = ('reviewer staffing', 'reviewer vendor', 'reviewer team')
-        COMMENT = 'Vendor name for outsourced moderators, otherwise In-house. Covers HUMAN reviewers only — for a breakdown that includes automated decisions, use decision_staffing_model instead',
+        COMMENT = '{{ col_comment('dim_reviewer', 'staffing_model') }}',
     reviewers.moderator_is_outsourced AS reviewers.is_outsourced
         WITH SYNONYMS = ('outsourced', 'is BPO', 'external moderator')
-        COMMENT = 'Whether the moderator belongs to an outsourced vendor team',
+        COMMENT = '{{ col_comment('dim_reviewer', 'is_outsourced') }}',
     reviewers.moderator_is_qa AS reviewers.is_qa
         WITH SYNONYMS = ('QA', 'quality assurance', 'auditor')
-        COMMENT = 'Whether the moderator is in the QA group',
+        COMMENT = '{{ col_comment('dim_reviewer', 'is_qa') }}',
 
     -- ---- Entity --------------------------------------------------------------------
     entities.entity_type AS entities.entity_schema
         WITH SYNONYMS = ('entity type', 'content type', 'object type', 'what was reviewed')
-        COMMENT = 'Entity schema — user, text_post, image_post and any customer-defined schema',
+        COMMENT = '{{ col_comment('dim_entity', 'entity_schema') }}',
 
     -- ---- Job ----------------------------------------------------------------------
     jobs.job_status AS jobs.job_status
         WITH SYNONYMS = ('status', 'job status', 'open or closed', 'state')
-        COMMENT = 'closed when a closure event was seen, otherwise the latest action status',
+        COMMENT = '{{ col_comment('fct_jobs', 'job_status') }}',
     jobs.job_category AS jobs.job_category
         WITH SYNONYMS = ('job category', 'job type', 'work type', 'appeal or standard')
-        COMMENT = 'Job category — standard, appeal, qa, golden and others',
+        COMMENT = '{{ col_comment('fct_jobs', 'job_category') }}',
     jobs.job_is_closed AS jobs.is_closed
         WITH SYNONYMS = ('closed', 'is closed', 'resolved')
-        COMMENT = 'Whether a closure event was seen for this job',
+        COMMENT = '{{ col_comment('fct_jobs', 'is_closed') }}',
     jobs.job_closed_by_automation AS jobs.closed_by_automated_decision
         WITH SYNONYMS = ('closed automatically', 'automated close', 'auto resolved')
-        COMMENT = 'Whether the final decision on the job was automated',
+        COMMENT = '{{ col_comment('fct_jobs', 'closed_by_automated_decision') }}',
     jobs.job_was_escalated AS jobs.was_escalated
         WITH SYNONYMS = ('escalated', 'was escalated')
-        COMMENT = 'Whether the job was escalated at any point',
+        COMMENT = '{{ col_comment('fct_jobs', 'was_escalated') }}',
     jobs.job_was_moved_between_queues AS jobs.was_moved_between_queues
         WITH SYNONYMS = ('moved queue', 'changed queue', 'requeued')
-        COMMENT = 'Whether the job changed queue at any point',
+        COMMENT = '{{ col_comment('fct_jobs', 'was_moved_between_queues') }}',
     jobs.job_created_date AS jobs.created_date
-        WITH SYNONYMS = ('job created date', 'date created', 'when the job was created'),
+        WITH SYNONYMS = ('job created date', 'date created', 'when the job was created')
+        COMMENT = '{{ col_comment('fct_jobs', 'created_date') }}',
     jobs.job_closed_date AS jobs.closed_date
-        WITH SYNONYMS = ('closed date', 'date closed', 'closure date', 'day closed'),
+        WITH SYNONYMS = ('closed date', 'date closed', 'closure date', 'day closed')
+        COMMENT = '{{ col_comment('fct_jobs', 'closed_date') }}',
     jobs.job_closed_month AS jobs.closed_month
-        WITH SYNONYMS = ('closed month', 'month closed'),
+        WITH SYNONYMS = ('closed month', 'month closed')
+        COMMENT = '{{ col_comment('fct_jobs', 'closed_month') }}',
 
     -- ---- Decision ------------------------------------------------------------------
     decisions.decision_source AS decisions.decision_source_type
         WITH SYNONYMS = ('decision source', 'how it was decided', 'manual or automated', 'decision origin')
-        COMMENT = 'manual means a human decided. Every other value is machine-driven',
+        COMMENT = '{{ col_comment('fct_decisions', 'decision_source_type') }}',
     decisions.decision_staffing_model AS decisions.staffing_model
         WITH SYNONYMS = ('staffing', 'staffing model', 'vendor', 'BPO', 'outsourced or in-house', 'supplier', 'team')
-        COMMENT = 'Who handled the decision: the vendor name, In-house, or Automated. Prefer this over the reviewer staffing model, because it accounts for automated decisions instead of leaving them unlabelled',
+        COMMENT = '{{ col_comment('fct_decisions', 'staffing_model') }}',
     decisions.decision_is_automated AS decisions.is_automated
         WITH SYNONYMS = ('automated decision', 'machine decision', 'auto decided')
-        COMMENT = 'Whether the decision was taken without a human',
+        COMMENT = '{{ col_comment('fct_decisions', 'is_automated') }}',
     decisions.decision_is_cleared AS decisions.is_cleared_outcome
         WITH SYNONYMS = ('cleared', 'no violation found', 'reviewed and cleared')
-        COMMENT = 'Policies were applied but all were non-violating — reviewed and found fine',
+        COMMENT = '{{ col_comment('fct_decisions', 'is_cleared_outcome') }}',
     decisions.decision_date AS decisions.decided_date
-        WITH SYNONYMS = ('decision date', 'date decided', 'day decided'),
+        WITH SYNONYMS = ('decision date', 'date decided', 'day decided')
+        COMMENT = '{{ col_comment('fct_decisions', 'decided_date') }}',
     decisions.decision_month AS decisions.decided_month
-        WITH SYNONYMS = ('decision month', 'month decided'),
+        WITH SYNONYMS = ('decision month', 'month decided')
+        COMMENT = '{{ col_comment('fct_decisions', 'decided_month') }}',
     decisions.decision_hour_of_day AS decisions.decided_hour_of_day
-        WITH SYNONYMS = ('hour of day', 'time of day decided', 'shift hour'),
+        WITH SYNONYMS = ('hour of day', 'time of day decided', 'shift hour')
+        COMMENT = '{{ col_comment('fct_decisions', 'decided_hour_of_day') }}',
 
     -- ---- Job action ----------------------------------------------------------------
     job_actions.action_type AS job_actions.action
         WITH SYNONYMS = ('action', 'action type', 'what happened', 'movement type')
-        COMMENT = 'The lifecycle action — created, changed_queue, escalated, cancelled and others',
+        COMMENT = '{{ col_comment('fct_job_actions', 'action') }}',
     job_actions.action_source AS job_actions.action_source
         WITH SYNONYMS = ('action source', 'who or what acted')
-        COMMENT = 'One of manual, workflow, auto, api, agent',
+        COMMENT = '{{ col_comment('fct_job_actions', 'action_source') }}',
     job_actions.action_actor_type AS job_actions.actor_type
         WITH SYNONYMS = ('actor', 'actor type', 'human or workflow')
-        COMMENT = 'user, workflow, or none. Sources auto, api and agent carry neither',
+        COMMENT = '{{ col_comment('fct_job_actions', 'actor_type') }}',
     job_actions.action_date AS job_actions.actioned_date
-        WITH SYNONYMS = ('action date', 'date actioned', 'day actioned'),
+        WITH SYNONYMS = ('action date', 'date actioned', 'day actioned')
+        COMMENT = '{{ col_comment('fct_job_actions', 'actioned_date') }}',
     job_actions.action_workflow_name AS job_actions.actor_workflow_name
         WITH SYNONYMS = ('workflow', 'workflow name', 'automation name')
-        COMMENT = 'Workflow that took the action, when a workflow did'
+        COMMENT = '{{ col_comment('fct_job_actions', 'actor_workflow_name') }}'
 
 )
 
 METRICS (
+
+    -- METRIC COMMENTS ARE WRITTEN HERE, unlike every other comment in this file, and the
+    -- reason is that there is nothing to point them at. A metric is an aggregate over an
+    -- expression — SUM(IFF(jobs.is_closed, 1, 0)) — so no single mart column carries its
+    -- definition, and a macro has no column description to read. Nor can one be reached
+    -- another way: `graph` exposes nodes, sources, metrics and exposures, but no docs
+    -- collection, so a doc block cannot be resolved from a model body except by going
+    -- through a column description.
+    --
+    -- That is not the drift risk the column comments were, though. A metric is defined in
+    -- exactly one place already — here — so there is no second copy to fall out of step
+    -- with. The duplication that mattered was columns documented once for dbt and again for
+    -- Analyst, and that is what has been removed.
 
     -- ---- Job volume and cycle time -------------------------------------------------
     jobs.total_jobs AS COUNT(jobs.job_key)
