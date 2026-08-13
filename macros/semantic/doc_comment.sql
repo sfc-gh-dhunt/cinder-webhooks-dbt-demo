@@ -87,16 +87,23 @@
   {%- endif -%}
 
   {#- schema.yml keys keep their authored case; compare case-insensitively so the semantic
-      view can reference columns the way Snowflake reports them. -#}
+      view can reference columns the way Snowflake reports them.
+
+      `present` is tracked separately from `desc` on purpose. A column declared in
+      schema.yml with tests but no `description:` arrives as an empty string, not as
+      missing — so testing the description alone cannot tell "you referenced a column that
+      does not exist" apart from "the column exists but nobody wrote a description". Those
+      are different mistakes with different fixes, and the error message should say which. -#}
   {%- set wanted = column_name | lower -%}
-  {%- set found = namespace(desc=none) -%}
+  {%- set found = namespace(desc='', present=false) -%}
   {%- for key, col in node.columns.items() -%}
-    {%- if key | lower == wanted -%}
-      {%- set found.desc = col.get('description') -%}
+    {%- if not found.present and key | lower == wanted -%}
+      {%- set found.present = true -%}
+      {%- set found.desc = col.get('description') or '' -%}
     {%- endif -%}
   {%- endfor -%}
 
-  {%- if found.desc is none -%}
+  {%- if not found.present -%}
     {{- exceptions.raise_compiler_error(
           "col_comment: '" ~ model_name ~ "' has no column '" ~ column_name
           ~ "' in schema.yml. Either the column was renamed and the semantic view was not "
@@ -105,9 +112,9 @@
 
   {%- if not (found.desc | trim) -%}
     {{- exceptions.raise_compiler_error(
-          "col_comment: '" ~ model_name ~ "." ~ column_name ~ "' is documented with an "
-          ~ "empty description. The semantic view relies on it, so an empty string would "
-          ~ "publish a blank comment to Cortex Analyst. Write a description.") -}}
+          "col_comment: '" ~ model_name ~ "." ~ column_name ~ "' is declared in schema.yml "
+          ~ "but has no description. The semantic view relies on it, so this would publish "
+          ~ "a blank comment to Cortex Analyst. Write a description.") -}}
   {%- endif -%}
 
   {{- cinder_webhooks.sv_escape(found.desc) -}}

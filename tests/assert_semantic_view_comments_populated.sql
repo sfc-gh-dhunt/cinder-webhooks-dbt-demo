@@ -23,17 +23,31 @@
 
     Metrics are deliberately not covered. Their comments are written inline in the
     model because an aggregate has no single mart column to source from, and the
-    model header explains why that is not the same drift risk.
+    model header explains why that is not the same drift risk. Logical tables,
+    facts and dimensions ARE all covered, because all three are macro-sourced.
+
+    AND THE SET IS FLOOR-CHECKED, which matters more than it looks. Every predicate
+    below filters on catalog, schema and name. If the semantic view is missing,
+    dropped, renamed, or built into a schema this test is not looking at, the filter
+    matches nothing, "no bad rows" is trivially true, and dbt reports PASS. The
+    failure this test exists to catch sits immediately next to the failure that
+    makes it silently green. So a shortfall in the number of elements found is
+    itself a failure.
 
     ON THE UNQUALIFIED `information_schema`: the database is deliberately not
     interpolated into the FROM clause. INFORMATION_SCHEMA resolves against the
     session database, which dbt sets from the target, so this is correct at run
     time — and it keeps every piece of Jinja in this file inside a string literal.
-    That is what lets sqlfluff parse it. Writing `{{ sv.database }}.information_schema`
-    renders to `.information_schema` under sqlfluff's stub context and produces an
-    unparsable section, which is why two other tests in this directory had to be
-    added to .sqlfluffignore. This one does not need to be.
+    That is what lets sqlfluff parse it. Writing a database-qualified
+    `information_schema` renders to a leading dot under sqlfluff's stub context and
+    produces an unparsable section, which is why two other tests in this directory
+    had to be added to .sqlfluffignore. This one does not need to be.
 -#}
+
+{#- The element count this semantic view is expected to publish: 8 logical tables,
+    12 facts, 34 dimensions. Raise it when adding elements; a mismatch failing the
+    test is the intended behaviour, not a nuisance. -#}
+{%- set expected_elements = 54 -%}
 
 {%- set sv = ref('sem_cinder_moderation') -%}
 
@@ -65,16 +79,33 @@ facts as (
 
 ),
 
+tables as (
+
+    select
+          'table'             as element_type
+        , name               as table_name
+        , name
+        , comment
+    from information_schema.semantic_tables
+    where semantic_view_catalog = '{{ sv.database | upper }}'
+      and semantic_view_schema  = '{{ sv.schema | upper }}'
+      and semantic_view_name    = '{{ sv.identifier | upper }}'
+
+),
+
 everything as (
 
     select * from dimensions
     union all
     select * from facts
+    union all
+    select * from tables
 
 )
 
--- A row here is a dimension or fact that reached Snowflake with nothing to tell
--- Cortex Analyst about it.
+-- A row here is either an element that reached Snowflake with nothing to tell Cortex
+-- Analyst about it, or the whole-view check reporting that fewer elements were found
+-- than this semantic view is supposed to publish.
 select
       element_type
     , table_name
@@ -83,3 +114,14 @@ select
 from everything
 where comment is null
    or trim(comment) = ''
+
+union all
+
+select
+      'ALL' as element_type
+    , 'ALL' as table_name
+    , 'element count below the expected floor: found '
+      || (select count(*) from everything)::varchar
+      || ', expected at least {{ expected_elements }}' as name
+    , null as comment
+where (select count(*) from everything) < {{ expected_elements }}

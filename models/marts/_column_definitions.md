@@ -58,10 +58,3 @@ Always-usable grouping label: the parent policy's name where known, otherwise th
 own name. Prefer this over the policy name when reporting distribution — leaf-level
 policies fragment into unreadably thin slices, and this never leaves a null bucket.
 {% enddocs %}
-
-
-{% docs col_handle_time_hours %}
-Hours from job creation to the decision being recorded. The measure meant by "handle time"
-when comparing queues and moderators. Null rather than zero when creation time is absent.
-Heavily right-skewed, so a median describes it better than a mean.
-{% enddocs %}

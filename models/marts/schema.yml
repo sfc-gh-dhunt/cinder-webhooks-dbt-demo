@@ -71,7 +71,9 @@ models:
         tests: [not_null]
       - name: policy_severity_class
         description: >
-          One of `illegal`, `violating`, `non_violating`. The three cuts that get asked for.
+          One of `illegal`, `violating`, `non_violating` — the three cuts that get asked for.
+          A non-violating policy records a reviewed-and-cleared outcome, not a violation, so
+          the presence of a policy is not by itself evidence of enforcement.
         tests:
           - not_null
           - accepted_values:
@@ -115,8 +117,10 @@ models:
           reviewers and for any group name that does not match the convention.
       - name: staffing_model
         description: >
-          Vendor name where known, otherwise `In-house`. Always populated, so staffing
-          breakdowns have no null bucket.
+          Vendor name where known, otherwise `In-house`. Covers HUMAN reviewers only —
+          automated decisions carry no reviewer, so they are absent here rather than null.
+          For a staffing breakdown that accounts for automated decisions, use
+          `staffing_model` on `fct_decisions` instead.
         tests: [not_null]
       - name: is_outsourced
         description: >
@@ -156,6 +160,7 @@ models:
       - name: entity_username
         description: Present only for schemas that define it. Null elsewhere, correctly.
       - name: has_attributes
+        description: Whether the entity carried any attributes on the event that observed it.
         tests: [not_null]
     tests:
       - dbt_utils.unique_combination_of_columns:
@@ -195,8 +200,12 @@ models:
       `unclassified` rather than being guessed into a bucket.
     columns:
       - name: enforcement_action_key
+        description: Surrogate key for the enforcement action. Generated from the slug.
         tests: [unique, not_null]
       - name: enforcement_action_slug
+        description: >
+          Enforcement action slug as sent by Cinder. The business key — the wire format
+          carries no id or name.
         tests: [unique, not_null]
       - name: enforcement_severity_rank
         description: Local convention. Higher is more severe. 0 for unrecognised actions.
@@ -204,6 +213,9 @@ models:
           - not_null
           - dbt_utils.accepted_range: { min_value: 0, max_value: 5, inclusive: true }
       - name: enforcement_category
+        description: >
+          Grouping of enforcement actions by what they affect. A local convention defined in
+          this project, not something Cinder supplies.
         tests:
           - accepted_values:
               values: ['none', 'advisory', 'visibility', 'content', 'account', 'unclassified']
@@ -270,7 +282,11 @@ models:
       - name: handle_time_seconds
         description: Job creation to decision. Null when creation time is absent.
       - name: handle_time_hours
-        description: '{{ doc("col_handle_time_hours") }}'
+        description: >
+          Hours from job creation to the decision being recorded, at the DECISION grain — one
+          value per decision. The measure meant by "handle time" when comparing queues and
+          moderators. Null rather than zero when creation time is absent. Heavily
+          right-skewed, so a median describes it better than a mean.
       - name: decision_source_type
         description: >
           How the decision was reached. `manual` means a person decided it; every other value
@@ -403,8 +419,7 @@ models:
       resolves to FULL refresh. For this model that is correct rather than a shortcoming: an
       accumulating snapshot mutates rows that already exist, so any incremental scheme has
       to re-derive every job touched anywhere in the window — a well-known source of subtly
-      stale rows when the window is slightly too narrow. Check what any mart resolved to
-      with SHOW DYNAMIC TABLES IN SCHEMA CINDER_ANALYTICS.MARTS and read refresh_mode_reason.
+      stale rows when the window is slightly too narrow.
 
       KNOWN UNDERCOUNT on closures: Cinder sends no `job.closed` when a job closes with zero
       decisions, so such a job appears here as permanently open. `is_open` is therefore
@@ -490,7 +505,12 @@ models:
               inclusive: true
               severity: warn
       - name: handle_time_hours
-        description: '{{ doc("col_handle_time_hours") }}'
+        description: >
+          Hours from job creation to the job's final decision, at the JOB grain — one value
+          per job. Null for jobs with no decision. For handle time per decision, which is
+          the measure meant when comparing queues and moderators, use `handle_time_hours` on
+          `fct_decisions` instead; a job with several reviews contributes once here and once
+          per decision there.
       - name: action_count
         description: >
           Number of lifecycle actions recorded against the job. Zero when the action history
