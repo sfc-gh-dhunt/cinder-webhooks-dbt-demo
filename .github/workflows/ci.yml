@@ -106,6 +106,28 @@ jobs:
           DBT_PROFILES_DIR: ${{ github.workspace }}/.github/ci-profiles
         run: dbt parse --no-partial-parse
 
+      - name: Check the agent specs render
+        # WHY THIS IS A SEPARATE CHECK rather than something dbt catches.
+        #
+        # The agent and evaluation model bodies are whitespace-sensitive YAML. A Jinja
+        # comment carrying the trim marker deletes the newline and indentation around
+        # itself, which welds the following key onto the previous line. When the previous
+        # line sits inside a block scalar the key becomes prose and DISAPPEARS — leaving
+        # valid YAML that is missing something.
+        #
+        # Nothing downstream notices. `dbt parse` passes, CREATE AGENT succeeds, and the
+        # agent comes up with no semantic view attached and answers from the model's own
+        # knowledge instead of from data. Both failures in this area so far were of this
+        # shape, and one of them was a comment that closed itself early by quoting its own
+        # delimiter, which leaked an entire docstring into the spec.
+        #
+        # So the rendered structure is asserted directly: required keys survive,
+        # sample_questions entries are objects rather than strings, and every
+        # tool_resources key matches a declared tool name.
+        run: |
+          pip install jinja2 pyyaml
+          python3 scripts/check_agent_spec_renders.py
+
       - name: Check for private references
         # This repo is meant to be shareable. A customer name or account identifier committed
         # once is in the history for good, so it is checked mechanically.
@@ -129,6 +151,12 @@ jobs:
     needs: [validate, perf-gate]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # FULL HISTORY, because the agent gate later in this job diffs against the merge
+          # base to decide whether the agent needs re-grading. The default shallow clone has
+          # no merge base, and `git diff origin/main...HEAD` fails on it with a message about
+          # a bad revision rather than about the clone depth.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -178,7 +206,7 @@ jobs:
             snow sql -c ci -q "CREATE SCHEMA IF NOT EXISTS ${SNOWFLAKE_DATABASE}.${CI_SCHEMA_PREFIX}${layer};"
           done
 
-      - name: Point the profile at the CI role
+      - name: Point the profile at the CI role and schema
         # profiles.yml names the production role, because that is right for the production
         # object and the field is mandatory. `snow dbt deploy` validates it against the
         # connecting role, so deploying as the CI user with that name in place fails.
@@ -186,9 +214,18 @@ jobs:
         # Rewritten here rather than solved by granting the CI user the production role, which
         # would defeat the separation, or by naming the CI role in the committed file, which
         # would make production deploy as CI. The edit exists only in this runner's checkout.
+        #
+        # THE SCHEMA IS REWRITTEN TOO, and it is not cosmetic. Every model sets its own schema,
+        # so the profile's schema is only a fallback for dbt — but it is also the SESSION's
+        # schema, and an agent evaluation runs FROM the current schema: it needs USAGE there
+        # plus CREATE FILE FORMAT and CREATE TASK. Left pointing at production's SEMANTIC, a
+        # pull request would either be refused or would create evaluation scaffolding in
+        # production. Pointed at this pull request's own schema, which CI created and therefore
+        # owns, it needs no additional grants and stays isolated.
         run: |
           sed -i "s/^      role: .*/      role: ${SNOWFLAKE_ROLE}/" profiles.yml
-          grep -E "^      role:" profiles.yml
+          sed -i "s/^      schema: .*/      schema: ${CI_SCHEMA_PREFIX}SEMANTIC/" profiles.yml
+          grep -E "^      (role|schema):" profiles.yml
 
       - name: Remove local dbt artifacts before deploying
         # dbt_packages/, package-lock.yml, target/ and logs/ must not be uploaded. The lock
@@ -258,6 +295,79 @@ jobs:
               sys.exit("The semantic view returned no rows. Check the relationships.")
           print(f"Semantic view returned {count} grouped rows.")
           PY
+
+      # ---- Agent evaluation gate --------------------------------------------------
+      # WHAT THIS GATES. The build step above already created the agent in this pull
+      # request's schema, which proves the spec is valid DDL. It does not prove the agent
+      # still ANSWERS well — a spec can be perfectly valid and have lost a tool, or have
+      # instructions that quietly stopped working. So the agent is graded against a small
+      # evaluation set and the pull request fails if scores drop.
+      #
+      # WHY THIS IS GATED ON A DIFF RATHER THAN ALWAYS RUNNING. An evaluation invokes the
+      # agent once per question and then an LLM judge once per metric per question, so it
+      # costs Cortex credits every time. Most pull requests here touch neither the agent nor
+      # the semantic view it reads, and paying to re-grade an unchanged agent buys nothing.
+      #
+      # NOTE WHAT IS AND IS NOT BEING DONE HERE. This is NOT state-based selection — the file
+      # header is explicit that faking dbt state comparison is the wrong answer, and this does
+      # not attempt it. It asks git a much narrower question: did this pull request touch the
+      # files that can change the agent's behaviour? The FAN-OUT from there is dbt's own DAG,
+      # via `--select agent_cinder_moderation+`, which is the mechanism working as intended
+      # rather than a substitute for it.
+      #
+      # WHY THE MERGE BASE AND NOT `HEAD~1`. A pull request with several commits, or one that
+      # has had main merged into it, has no single meaningful previous commit.
+      # `origin/main...HEAD` asks what this branch changed relative to where it diverged.
+      - name: Decide whether the agent needs re-grading
+        id: agent_scope
+        run: |
+          CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- \
+            models/agents/ \
+            models/semantic/ \
+            seeds/evals/ \
+            macros/materializations/ \
+            tests/assert_agent_ \
+            || true)
+
+          if [ -n "$CHANGED" ]; then
+            echo "Agent-affecting files changed:"
+            echo "$CHANGED"
+            echo "run_gate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No changes under models/agents, models/semantic, seeds/evals or the"
+            echo "materializations. The agent is unchanged, so re-grading it would cost"
+            echo "credits and tell us nothing. Skipping."
+            echo "run_gate=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Grade the agent
+        if: steps.agent_scope.outputs.run_gate == 'true'
+        # `--select agent_cinder_moderation+` is the whole selection story: the agent, the
+        # evaluation model downstream of it, and the two assertions downstream of that. The
+        # graph is what knows which evals belong to which agent — nobody maintains that list.
+        #
+        # RE-RUNNING THE AGENT HERE IS DELIBERATE AND FREE. The materialization fingerprints
+        # the spec into the version comment, so a second run against an unchanged spec skips
+        # the commit entirely. That means this step also exercises the idempotency path on
+        # every pull request, which is the branch most likely to rot unnoticed.
+        #
+        # `eval_run: true` is what turns a staged config into a paid run. Without it the
+        # evaluation model keeps the config in sync and the gate passes vacuously — which is
+        # why assert_agent_eval_scores.sql treats "eval_run was true but no run exists" as a
+        # failure rather than a pass.
+        #
+        # IF THIS STEP FAILS WITH A PRIVILEGE ERROR, the CI role is missing the evaluation
+        # grants: SNOWFLAKE.CORTEX_USER, USE AI FUNCTIONS and EXECUTE TASK ON ACCOUNT. They
+        # are account- and database-level, so unlike creating the agent they cannot be
+        # inherited from owning the pull request's schema. Apply setup/09_agent_access.sql.
+        run: |
+          snow dbt execute \
+            --connection ci \
+            --database "$SNOWFLAKE_DATABASE" \
+            --schema DBT \
+            "$DBT_PROJECT_NAME" build \
+            --select agent_cinder_moderation+ \
+            --vars "{\"cinder_schema_prefix\": \"$CI_SCHEMA_PREFIX\", \"cinder_source_mode\": \"seed\", \"eval_run\": true}"
 
       # ---- Teardown ---------------------------------------------------------------
       # always(), so a failed build does not leave schemas and a project object behind. CI

@@ -10,3 +10,26 @@ macros/
 # parsed — and it was already being skipped silently for exceeding the file-size limit. Ignoring
 # it explicitly is better than a file that appears linted and is not.
 models/semantic/
+
+# Same reason, different dialect. The agent model body is agent specification YAML and the
+# evaluation model body is EXECUTE_AI_EVALUATION run-configuration YAML — in both cases the
+# materialization hands the body to Snowflake verbatim, so the file is deliberately not SQL at
+# all. sqlfluff reports it as an unparsable section, which is accurate and useless.
+#
+# eval_questions_cinder.sql in the same directory IS ordinary SQL and would lint fine. It is
+# swept up by the directory ignore, which is the trade: one real SELECT unlinted, against a
+# per-file list that will be wrong the first time somebody adds a model here.
+models/agents/
+
+# These two tests do their work in Jinja rather than in SQL, because both need metadata that a
+# single SQL statement cannot reach: SHOW VERSIONS output is only available through RESULT_SCAN
+# on its own query id, and evaluation run names are generated per invocation. So they call
+# run_query at compile time and emit a literal assertion.
+#
+# sqlfluff renders with the stub macros in .sqlfluff-stubs/ and no adapter, so `target`,
+# `run_query` and the agate results they return are all undefined — it reports undefined-variable
+# failures for code that is correct under dbt. Stubbing run_query is not a fix either: the stub
+# would have to return a plausible SHOW VERSIONS result set for the surrounding Jinja to survive,
+# which is a fake deep enough to be its own maintenance burden.
+tests/assert_agent_eval_scores.sql
+tests/assert_agent_spec_has_tools.sql
