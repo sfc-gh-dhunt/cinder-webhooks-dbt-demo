@@ -24,7 +24,7 @@ models:
       queues, and history will not follow the rename.
     columns:
       - name: queue_key
-        description: Surrogate key.
+        description: '{{ doc("col_queue_key") }}'
         tests: [unique, not_null]
       - name: queue_slug
         description: Queue slug — the business key.
@@ -50,10 +50,15 @@ models:
       `policy_group_name` is always usable because it falls back to the policy's own name.
     columns:
       - name: policy_key
+        description: '{{ doc("col_policy_key") }}'
         tests: [unique, not_null]
       - name: policy_id
+        description: Policy id as sent by Cinder. The business key.
         tests: [unique, not_null]
       - name: policy_name
+        description: >
+          Name of the specific policy applied. The leaf level of the policy tree — see
+          `policy_group_name` for the roll-up that reads better in a distribution.
         tests: [not_null]
       - name: policy_parent_id
         description: Parent policy id. Null for roots.
@@ -62,13 +67,13 @@ models:
           Parent policy name, resolved from observed policies. Null when the parent has
           never been applied directly.
       - name: policy_group_name
-        description: >
-          Always-usable grouping label: the parent's name where known, otherwise the
-          policy's own name. Avoids a null bucket in every distribution.
+        description: '{{ doc("col_policy_group_name") }}'
         tests: [not_null]
       - name: policy_severity_class
         description: >
-          One of `illegal`, `violating`, `non_violating`. The three cuts that get asked for.
+          One of `illegal`, `violating`, `non_violating` — the three cuts that get asked for.
+          A non-violating policy records a reviewed-and-cleared outcome, not a violation, so
+          the presence of a policy is not by itself evidence of enforcement.
         tests:
           - not_null
           - accepted_values:
@@ -78,6 +83,10 @@ models:
           A non-violating policy records a reviewed-and-cleared outcome. Counting "has a
           policy" as "is a violation" overstates enforcement — this is the flag that
           prevents it.
+      - name: policy_is_illegal
+        description: >
+          Whether the policy covers illegal content, and so is potentially reportable to a
+          regulator. A subset of the violating policies, not a separate severity.
 
   - name: dim_reviewer
     description: >
@@ -91,10 +100,15 @@ models:
       It fails safe: an unmatched name leaves the vendor null and `is_outsourced` false.
     columns:
       - name: reviewer_key
+        description: '{{ doc("col_reviewer_key") }}'
         tests: [unique, not_null]
       - name: reviewer_email
+        description: >
+          Moderator email, lowercased. The business key, because the webhooks carry no user
+          id.
         tests: [unique, not_null]
       - name: reviewer_name
+        description: Moderator display name, as it appears in Cinder.
       - name: reviewer_group_array
         description: Group membership as at the latest observation. A point-in-time snapshot.
       - name: vendor_name
@@ -103,11 +117,20 @@ models:
           reviewers and for any group name that does not match the convention.
       - name: staffing_model
         description: >
-          Vendor name where known, otherwise `In-house`. Always populated, so staffing
-          breakdowns have no null bucket.
+          Vendor name where known, otherwise `In-house`. Covers HUMAN reviewers only —
+          automated decisions carry no reviewer, so they are absent here rather than null.
+          For a staffing breakdown that accounts for automated decisions, use
+          `staffing_model` on `fct_decisions` instead.
         tests: [not_null]
       - name: is_outsourced
+        description: >
+          Whether the moderator belongs to an outsourced vendor team. False for in-house
+          reviewers and for any group name that does not match the vendor convention.
         tests: [not_null]
+      - name: is_qa
+        description: >
+          Whether the moderator is in the quality-assurance group. QA reviewers audit other
+          moderators' work, so their throughput is not comparable to a frontline queue.
 
   - name: dim_entity
     description: >
@@ -122,16 +145,22 @@ models:
       Keyed on (entity_schema, entity_id) because ids are only unique within a schema.
     columns:
       - name: entity_key
+        description: '{{ doc("col_entity_key") }}'
         tests: [unique, not_null]
       - name: entity_schema
+        description: >
+          The kind of thing under review — `user`, `text_post`, `image_post`, and any other
+          schema defined in Cinder. Determines which attribute keys are present.
         tests: [not_null]
       - name: entity_id
+        description: Entity id as sent by Cinder. Unique only within a schema.
         tests: [not_null]
       - name: entity_attributes
         description: The full attribute bag. Query with `entity_attributes:slug::varchar`.
       - name: entity_username
         description: Present only for schemas that define it. Null elsewhere, correctly.
       - name: has_attributes
+        description: Whether the entity carried any attributes on the event that observed it.
         tests: [not_null]
     tests:
       - dbt_utils.unique_combination_of_columns:
@@ -148,10 +177,13 @@ models:
       promises a "decisions by workflow" breakdown.
     columns:
       - name: workflow_key
+        description: '{{ doc("col_workflow_key") }}'
         tests: [unique, not_null]
       - name: workflow_id
+        description: Workflow id as sent by Cinder. The business key.
         tests: [unique, not_null]
       - name: workflow_name
+        description: Name of the automation workflow, as configured in Cinder.
       - name: workflow_rule_name
         description: >
           The most recent rule to fire, not the only one. `distinct_rule_count` tells you
@@ -168,8 +200,12 @@ models:
       `unclassified` rather than being guessed into a bucket.
     columns:
       - name: enforcement_action_key
+        description: Surrogate key for the enforcement action. Generated from the slug.
         tests: [unique, not_null]
       - name: enforcement_action_slug
+        description: >
+          Enforcement action slug as sent by Cinder. The business key — the wire format
+          carries no id or name.
         tests: [unique, not_null]
       - name: enforcement_severity_rank
         description: Local convention. Higher is more severe. 0 for unrecognised actions.
@@ -177,6 +213,9 @@ models:
           - not_null
           - dbt_utils.accepted_range: { min_value: 0, max_value: 5, inclusive: true }
       - name: enforcement_category
+        description: >
+          Grouping of enforcement actions by what they affect. A local convention defined in
+          this project, not something Cinder supplies.
         tests:
           - accepted_values:
               values: ['none', 'advisory', 'visibility', 'content', 'account', 'unclassified']
@@ -199,36 +238,74 @@ models:
       more than once by design.
     columns:
       - name: decision_sk
+        description: '{{ doc("col_decision_sk") }}'
         tests: [unique, not_null]
       - name: job_closure_event_sk
+        description: Key of the `job.closed` event this decision was carried on.
         tests: [not_null]
       - name: queue_key
-        description: Null only if the queue is missing from the dimension, which should not happen.
+        description: >
+          {{ doc("col_queue_key") }} Null only if the queue is missing from the dimension,
+          which should not happen.
         tests:
           - relationships:
               to: ref('dim_queue')
               field: queue_key
       - name: reviewer_key
         description: >
-          Null for automated decisions, by design. The relationship test tolerates null and
-          checks only that non-null keys resolve.
+          {{ doc("col_reviewer_key") }} The relationship test tolerates null and checks only
+          that non-null keys resolve.
         tests:
           - relationships:
               to: ref('dim_reviewer')
               field: reviewer_key
       - name: entity_key
+        description: '{{ doc("col_entity_key") }}'
         tests:
           - relationships:
               to: ref('dim_entity')
               field: entity_key
       - name: decided_at
+        description: Timestamp the decision was recorded.
         tests: [not_null]
+      - name: decided_date
+        description: Calendar date the decision was recorded. The usual day grain for trends.
+      - name: decided_month
+        description: Month the decision was recorded, truncated to the first of the month.
+      - name: decided_hour_of_day
+        description: >
+          Hour of day the decision was recorded, 0–23. For shift and coverage analysis; not a
+          date, so it does not order across days.
       - name: decision_count
         description: Always 1. Sum it for decision volume.
         tests: [not_null]
       - name: handle_time_seconds
         description: Job creation to decision. Null when creation time is absent.
+      - name: handle_time_hours
+        description: >
+          Hours from job creation to the decision being recorded, at the DECISION grain — one
+          value per decision. The measure meant by "handle time" when comparing queues and
+          moderators. Null rather than zero when creation time is absent. Heavily
+          right-skewed, so a median describes it better than a mean.
+      - name: decision_source_type
+        description: >
+          How the decision was reached. `manual` means a person decided it; every other value
+          is machine-driven.
+      - name: staffing_model
+        description: >
+          Who handled the decision — the vendor name, `In-house`, or `Automated`. Prefer this
+          over the reviewer staffing model for any staffing breakdown, because it accounts for
+          automated decisions instead of leaving them unlabelled.
+      - name: policy_count
+        description: >
+          Number of policies applied by this decision. Greater than one on multi-policy
+          decisions, which is why policy distribution cannot be counted from this grain.
+      - name: enforcement_action_count
+        description: >
+          Number of enforcement actions applied by this decision, excluding no-action
+          outcomes. Zero for a decision that found nothing to act on.
       - name: is_automated
+        description: Whether the decision was taken without a human.
         tests: [not_null]
       - name: is_cleared_outcome
         description: >
@@ -250,21 +327,28 @@ models:
       must add up to total decisions.
     columns:
       - name: decision_policy_sk
+        description: Surrogate key for one policy applied by one decision.
         tests: [unique, not_null]
       - name: decision_sk
+        description: '{{ doc("col_decision_sk") }}'
         tests:
           - not_null
           - relationships:
               to: ref('fct_decisions')
               field: decision_sk
       - name: policy_key
+        description: '{{ doc("col_policy_key") }}'
         tests:
           - relationships:
               to: ref('dim_policy')
               field: policy_key
       - name: policy_group_name
-        description: Parent policy area where known, otherwise the policy's own name.
+        description: '{{ doc("col_policy_group_name") }}'
       - name: decision_count_allocated
+        description: >
+          One decision split fractionally across the policies it applied, so a distribution
+          adds back up to the true decision total. Use this rather than a row count whenever
+          the shares must sum correctly.
         tests:
           - dbt_utils.accepted_range: { min_value: 0, max_value: 1, inclusive: true }
 
@@ -277,26 +361,43 @@ models:
       source `auto`, `api` or `agent` have neither.
     columns:
       - name: job_action_event_sk
+        description: Surrogate key for one lifecycle movement on one job.
         tests: [unique, not_null]
       - name: queue_key
+        description: '{{ doc("col_queue_key") }}'
         tests:
           - relationships:
               to: ref('dim_queue')
               field: queue_key
       - name: reviewer_key
-        description: Null unless a human took the action.
+        description: '{{ doc("col_reviewer_key") }}'
         tests:
           - relationships:
               to: ref('dim_reviewer')
               field: reviewer_key
       - name: workflow_key
-        description: Null unless a workflow took the action.
+        description: '{{ doc("col_workflow_key") }} Null unless a workflow took the action.'
         tests:
           - relationships:
               to: ref('dim_workflow')
               field: workflow_key
       - name: actioned_at
+        description: Timestamp the action was taken.
         tests: [not_null]
+      - name: actioned_date
+        description: Calendar date the action was taken. The usual day grain for activity trends.
+      - name: action
+        description: >
+          The lifecycle action — `created`, `changed_queue`, `escalated`, `cancelled` and
+          others. What happened to the job, as distinct from how it was finally decided.
+      - name: action_source
+        description: One of `manual`, `workflow`, `auto`, `api`, `agent`.
+      - name: actor_type
+        description: >
+          `user`, `workflow`, or none. Sources `auto`, `api` and `agent` carry neither, which
+          is why at most one actor key is populated per row.
+      - name: actor_workflow_name
+        description: Name of the workflow that took the action, when a workflow did.
       - name: job_action_count
         description: Always 1.
         tests: [not_null]
@@ -318,29 +419,35 @@ models:
       resolves to FULL refresh. For this model that is correct rather than a shortcoming: an
       accumulating snapshot mutates rows that already exist, so any incremental scheme has
       to re-derive every job touched anywhere in the window — a well-known source of subtly
-      stale rows when the window is slightly too narrow. Check what any mart resolved to
-      with SHOW DYNAMIC TABLES IN SCHEMA CINDER_ANALYTICS.MARTS and read refresh_mode_reason.
+      stale rows when the window is slightly too narrow.
 
       KNOWN UNDERCOUNT on closures: Cinder sends no `job.closed` when a job closes with zero
       decisions, so such a job appears here as permanently open. `is_open` is therefore
       "no closure event seen", not "definitely still in the queue".
     columns:
       - name: job_key
+        description: Surrogate key for the job. Generated from the job id.
         tests: [unique, not_null]
       - name: job_id
+        description: Job id as sent by Cinder. The business key.
         tests: [unique, not_null]
       - name: final_queue_key
+        description: >
+          {{ doc("col_queue_key") }} The queue the job ended in, which is not necessarily the
+          one it started in — see `queue_change_count`.
         tests:
           - relationships:
               to: ref('dim_queue')
               field: queue_key
       - name: entity_key
+        description: '{{ doc("col_entity_key") }}'
         tests:
           - relationships:
               to: ref('dim_entity')
               field: entity_key
       - name: final_reviewer_key
-        description: Null for jobs closed automatically or not yet closed.
+        description: >
+          {{ doc("col_reviewer_key") }} Null for jobs closed automatically or not yet closed.
         tests:
           - relationships:
               to: ref('dim_reviewer')
@@ -350,13 +457,39 @@ models:
           `closed` when a closure was seen, otherwise the latest action's resulting status,
           otherwise `unknown`.
         tests: [not_null]
+      - name: job_category
+        description: >
+          Job category — `standard`, `appeal`, `qa`, `golden` and others. Appeal and QA work
+          behaves differently from frontline review, so it is usually worth separating.
       - name: is_closed
+        description: Whether a closure event was seen for this job.
         tests: [not_null]
       - name: is_open
         description: >
           No closure event was seen. Not the same as "still in the queue" — see the model
           description on the closure undercount.
         tests: [not_null]
+      - name: closed_by_automated_decision
+        description: >
+          Whether the final decision on the job was automated. The job-level counterpart to
+          the decision-level automation flag.
+      - name: was_escalated
+        description: Whether the job was escalated at any point in its lifecycle.
+      - name: was_moved_between_queues
+        description: >
+          Whether the job changed queue at any point. The boolean companion to
+          `queue_change_count`, for a simple share-of-jobs cut.
+      - name: was_cancelled_by_workflow
+        description: >
+          Whether the job was cancelled by an automated workflow rather than by a person.
+      - name: created_date
+        description: Calendar date the job was created.
+      - name: closed_date
+        description: >
+          Calendar date the job closed. Null while no closure event has been seen, so a count
+          by this date is a count of closures rather than of jobs.
+      - name: closed_month
+        description: Month the job closed, truncated to the first of the month.
       - name: queue_change_count
         description: >
           Queue changes before closure. Requires both events; zero for a job with no action
@@ -372,7 +505,21 @@ models:
               inclusive: true
               severity: warn
       - name: handle_time_hours
-        description: Creation to decision. Null for jobs with no decision.
+        description: >
+          Hours from job creation to the job's final decision, at the JOB grain — one value
+          per job. Null for jobs with no decision. For handle time per decision, which is
+          the measure meant when comparing queues and moderators, use `handle_time_hours` on
+          `fct_decisions` instead; a job with several reviews contributes once here and once
+          per decision there.
+      - name: action_count
+        description: >
+          Number of lifecycle actions recorded against the job. Zero when the action history
+          predates the webhook subscription — `missing_action_history` distinguishes that from
+          a genuine zero.
+      - name: decision_count
+        description: >
+          Number of decisions recorded on the job. More than one where the queue requires
+          multiple reviews.
       - name: time_to_first_action_seconds
         description: >
           Queue waiting time, as distinct from review time. Usually the larger of the two
